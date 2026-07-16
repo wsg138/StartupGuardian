@@ -1,0 +1,15 @@
+name: StartupGuardian
+version: 1.0.0
+main: dev.p2wn.startupguardian.StartupGuardianPlugin
+api-version: '1.21'
+load: STARTUP
+author: P2wn
+commands:
+  startupguardian:
+    description: Manage StartupGuardian
+    usage: /startupguardian <status|check|reload|reset|testdiscord|help>
+    permission: startupguardian.admin
+permissions:
+  startupguardian.admin:
+    description: Allows StartupGuardian administration
+    default: op

@@ -1,0 +1,38 @@
+required-plugins:
+  - FastAsyncWorldEdit
+  - WorldGuard
+  - LuckPerms
+  - Polar
+  - EnthusiaCurrency
+  - Multiverse-Core
+  - tebex
+  - CoreProtect
+startup-check:
+  grace-period-ticks: 20
+protection:
+  enable-whitelist: true
+  kick-online-players: true
+  emergency-kick-ops: false
+  kick-message: "<red>The server entered emergency maintenance because a critical plugin failed to load."
+  restart-delay-seconds: 8
+  restart-command: "restart"
+  fallback-command: "stop"
+  restore-previous-whitelist-state-after-recovery: true
+restart-loop-protection:
+  enabled: true
+  maximum-automatic-restarts: 1
+  attempt-window-minutes: 15
+discord:
+  enabled: true
+  webhook-url: ""
+  staff-mentions:
+    role-ids:
+      - "ROLE_ID_HERE"
+    user-ids: []
+  repeated-alerts: 3
+  delay-between-alerts-milliseconds: 1500
+  username: "Startup Guardian"
+  avatar-url: ""
+messages:
+  incident-title: "CRITICAL SERVER STARTUP FAILURE"
+  recovery-title: "Server startup recovered"
