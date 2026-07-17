@@ -13,10 +13,12 @@ public final class SettingsLoader {
         List<String> roles = cleanIds(c.getStringList("discord.staff-mentions.role-ids"));
         List<String> users = cleanIds(c.getStringList("discord.staff-mentions.user-ids"));
         Settings.Discord d = new Settings.Discord(c.getBoolean("discord.enabled", true), text(c, "discord.webhook-url", ""), roles, users, bounded(c.getInt("discord.repeated-alerts", 3), 1, 10, 3), bounded(c.getInt("discord.delay-between-alerts-milliseconds", 1500), 0, 60000, 1500), text(c, "discord.username", "Startup Guardian"), text(c, "discord.avatar-url", ""));
-        return new Settings(plugins, grace, p, loop, d, new Settings.Messages(text(c, "messages.incident-title", "CRITICAL SERVER STARTUP FAILURE"), text(c, "messages.recovery-title", "Server startup recovered")));
+        Settings.Bypass bypass = new Settings.Bypass(cleanUuids(c.getStringList("critical-mode-bypass.player-uuids")), text(c, "critical-mode-bypass.permission", "startupguardian.bypass"), c.getBoolean("critical-mode-bypass.allow-ops", false));
+        return new Settings(plugins, grace, p, loop, d, bypass, new Settings.Messages(text(c, "messages.incident-title", "CRITICAL SERVER STARTUP FAILURE"), text(c, "messages.recovery-title", "Server startup recovered")));
     }
     private static int bounded(int value, int min, int max, int fallback) { return value < min || value > max ? fallback : value; }
     private static String text(FileConfiguration c, String path, String fallback) { String s = c.getString(path, fallback); return s == null ? fallback : s.trim(); }
     private static String command(FileConfiguration c, String path, String fallback) { String s = text(c, path, fallback).replaceFirst("^/", ""); return s.isBlank() ? fallback : s; }
     private static List<String> cleanIds(List<String> ids) { return ids.stream().map(String::trim).filter(s -> s.matches("[0-9]{5,30}")).distinct().toList(); }
+    private static List<java.util.UUID> cleanUuids(List<String> values) { return values.stream().map(String::trim).map(value -> { try { return java.util.UUID.fromString(value); } catch (IllegalArgumentException ignored) { return null; } }).filter(java.util.Objects::nonNull).distinct().toList(); }
 }

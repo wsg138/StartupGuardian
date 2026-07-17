@@ -31,6 +31,10 @@ With the defaults, the first failed startup schedules one restart. A second fail
 
 On a healthy startup after an incident, the marker is cleared, a single recovery webhook is sent, and the prior whitelist state is restored only when this plugin enabled it for the incident. A whitelist that was already enabled is never disabled by recovery.
 
+## Critical-mode access bypass
+
+By default, no player bypasses emergency whitelist restrictions. Add trusted player UUIDs to `critical-mode-bypass.player-uuids`, or grant the configured `startupguardian.bypass` permission through a permissions plugin. These bypasses work only while an active StartupGuardian incident exists and whitelist mode is enabled. Operators do not bypass automatically; set `critical-mode-bypass.allow-ops: true` only if every operator should be permitted to join in critical mode.
+
 ## Commands
 
 All commands require `startupguardian.admin`; console is always permitted.

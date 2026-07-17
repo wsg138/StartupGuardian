@@ -13,3 +13,6 @@ permissions:
   startupguardian.admin:
     description: Allows StartupGuardian administration
     default: op
+  startupguardian.bypass:
+    description: Allows a player to bypass critical-mode whitelist restrictions
+    default: false

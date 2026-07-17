@@ -17,6 +17,13 @@ public final class GuardianService {
     public Settings settings() { return settings; }
     public List<PluginHealth> health() { return PluginHealth.inspect(Bukkit.getPluginManager(), settings.requiredPlugins()); }
     public Optional<Incident> incident() { return store.load(log); }
+    public boolean allowsCriticalBypass(Player player) {
+        if (!Bukkit.hasWhitelist() || store.load(log).isEmpty()) return false;
+        Settings.Bypass bypass = settings.bypass();
+        if (bypass.playerUuids().contains(player.getUniqueId())) return true;
+        if (player.isOp() && !bypass.allowOps()) return false;
+        return bypass.allowOps() && player.isOp() || (!bypass.permission().isBlank() && player.hasPermission(bypass.permission()));
+    }
     public void startupCheck() { check(true, null); }
     public void manualCheck(boolean enforce, CommandSender sender) { check(enforce, sender); }
     private void check(boolean enforce, CommandSender sender) {
