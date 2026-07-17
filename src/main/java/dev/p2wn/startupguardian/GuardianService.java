@@ -28,8 +28,8 @@ public final class GuardianService {
     public void manualCheck(boolean enforce, CommandSender sender) { check(enforce, sender); }
     private void check(boolean enforce, CommandSender sender) {
         List<PluginHealth> health = health(); List<PluginHealth> failed = health.stream().filter(h -> !h.healthy()).toList();
-        if (failed.isEmpty()) { recoverIfNeeded(); if (sender != null) sender.sendMessage("[StartupGuardian] All " + health.size() + " required plugins are enabled."); else log.info("[StartupGuardian] All " + health.size() + " required plugins are enabled."); return; }
-        if (sender != null && !enforce) { sender.sendMessage("[StartupGuardian] Failed plugins: " + describe(failed) + ". Use --enforce to enter protection mode."); return; }
+        if (failed.isEmpty()) { recoverIfNeeded(); if (sender != null) sender.sendMessage(ChatColor.GOLD + "StartupGuardian " + ChatColor.DARK_GRAY + "» " + ChatColor.GREEN + "All " + health.size() + " required plugins are enabled."); else log.info("[StartupGuardian] All " + health.size() + " required plugins are enabled."); return; }
+        if (sender != null && !enforce) { sender.sendMessage(ChatColor.GOLD + "StartupGuardian " + ChatColor.DARK_GRAY + "» " + ChatColor.RED + "Failed plugins: " + ChatColor.WHITE + describe(failed) + ChatColor.GRAY + " • Use " + ChatColor.YELLOW + "--enforce" + ChatColor.GRAY + " to enter protection mode."); return; }
         handleFailure(health);
     }
     private void handleFailure(List<PluginHealth> health) {
