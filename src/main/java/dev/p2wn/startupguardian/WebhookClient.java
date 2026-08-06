@@ -33,13 +33,19 @@ public final class WebhookClient implements GuardianNotifier, AutoCloseable {
     static final int DISCORD_CONTENT_LIMIT = 2_000;
 
     static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(8);
+
     static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(12);
+
     private static final Duration SHUTDOWN_GRACE = Duration.ofSeconds(2);
+
     private static final long MAX_RETRY_AFTER_MILLIS = 30_000L;
+
     private static final int MAX_RATE_LIMIT_RETRIES = 1;
 
     private final Logger logger;
+
     private final WebhookTasks tasks;
+
     private final WebhookTransport transport;
 
     public WebhookClient(Logger logger) {
@@ -180,10 +186,9 @@ public final class WebhookClient implements GuardianNotifier, AutoCloseable {
     private String failures(Incident incident) {
         return String.join(
                 ", ",
-                incident.failures().stream()
-                        .map(failure -> "`" + failure.configuredName()
-                                + "` (" + failure.status() + ")")
-                        .toList());
+                incident.failures().stream().map(
+                        failure -> "`" + failure.configuredName()
+                                + "` (" + failure.status() + ")").toList());
     }
 
     private boolean queue(Settings settings, String message) {
@@ -258,10 +263,9 @@ public final class WebhookClient implements GuardianNotifier, AutoCloseable {
             if (seconds.signum() < 0) {
                 return Optional.empty();
             }
-            long milliseconds = seconds
-                    .multiply(BigDecimal.valueOf(1_000L))
-                    .setScale(0, RoundingMode.CEILING)
-                    .longValueExact();
+            long milliseconds = seconds.multiply(
+                    BigDecimal.valueOf(1_000L)).setScale(
+                            0, RoundingMode.CEILING).longValueExact();
             return Optional.of(Math.min(milliseconds, MAX_RETRY_AFTER_MILLIS));
         } catch (ArithmeticException | NumberFormatException exception) {
             logger.log(
@@ -296,9 +300,13 @@ public final class WebhookClient implements GuardianNotifier, AutoCloseable {
 final class ScheduledWebhookTasks implements WebhookTasks {
 
     private final ScheduledExecutorService executor;
+
     private final Duration shutdownGrace;
+
     private final Set<Future<?>> submittedTasks = ConcurrentHashMap.newKeySet();
+
     private final Set<ScheduledFuture<?>> delayedTasks = ConcurrentHashMap.newKeySet();
+
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ScheduledWebhookTasks(Duration shutdownGrace) {
@@ -375,19 +383,17 @@ final class ScheduledWebhookTasks implements WebhookTasks {
 
 final class JdkWebhookTransport implements WebhookTransport {
 
-    private final HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(WebhookClient.CONNECT_TIMEOUT)
-            .build();
+    private final HttpClient client = HttpClient.newBuilder().connectTimeout(
+            WebhookClient.CONNECT_TIMEOUT).build();
 
     @Override
     public WebhookResponse send(String webhookUrl, String payload)
             throws IOException, InterruptedException {
 
-        HttpRequest request = HttpRequest.newBuilder(URI.create(webhookUrl))
-                .timeout(WebhookClient.REQUEST_TIMEOUT)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(payload))
-                .build();
+        HttpRequest request = HttpRequest.newBuilder(URI.create(webhookUrl)).timeout(
+                WebhookClient.REQUEST_TIMEOUT).header(
+                        "Content-Type", "application/json").POST(
+                                HttpRequest.BodyPublishers.ofString(payload)).build();
         HttpResponse<Void> response = client.send(
                 request,
                 HttpResponse.BodyHandlers.discarding());
