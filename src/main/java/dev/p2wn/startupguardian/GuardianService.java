@@ -17,12 +17,17 @@ import org.bukkit.entity.Player;
 public final class GuardianService {
 
     private final Logger logger;
+
     private final IncidentRepository store;
+
     private final GuardianNotifier notifier;
+
     private final GuardianEnvironment environment;
+
     private final AtomicBoolean handling = new AtomicBoolean();
 
     private Settings currentSettings;
+
     private Optional<GuardianEnvironment.RestartTask> restartTask = Optional.empty();
 
     public GuardianService(
@@ -142,8 +147,7 @@ public final class GuardianService {
     private void check(boolean enforce, CommandSender sender) {
         List<PluginHealth> pluginHealth = health();
         List<PluginHealth> failedPlugins = pluginHealth.stream()
-                .filter(health -> !health.healthy())
-                .toList();
+                .filter(health -> !health.healthy()).toList();
 
         if (failedPlugins.isEmpty()) {
             recoverIfNeeded();
@@ -179,12 +183,12 @@ public final class GuardianService {
             Optional<Incident> existingIncident = store.load();
             boolean previousWhitelist = environment.whitelistEnabled();
 
-            Incident incident = existingIncident
-                    .map(value -> value.observed(pluginHealth))
-                    .orElseGet(() -> Incident.create(
-                            pluginHealth,
-                            previousWhitelist,
-                            false));
+            Incident incident = existingIncident.map(
+                    value -> value.observed(pluginHealth)).orElseGet(
+                            () -> Incident.create(
+                                    pluginHealth,
+                                    previousWhitelist,
+                                    false));
 
             RestartPolicy.Decision decision = RestartPolicy.evaluate(
                     incident,
@@ -336,9 +340,8 @@ public final class GuardianService {
     }
 
     private boolean hasScheduledRestart() {
-        return restartTask
-                .filter(task -> !task.cancelled())
-                .isPresent();
+        return restartTask.filter(
+                task -> !task.cancelled()).isPresent();
     }
 
     private void cancelScheduledRestart() {
