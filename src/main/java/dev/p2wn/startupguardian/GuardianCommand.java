@@ -14,6 +14,7 @@ import org.bukkit.command.TabCompleter;
 public final class GuardianCommand implements CommandExecutor, TabCompleter {
 
     private static final String ADMIN_PERMISSION = "startupguardian.admin";
+
     private static final List<String> SUBCOMMANDS = List.of(
             "status",
             "check",
@@ -168,6 +169,8 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
                             + "Discord webhook client is closed"
                             + ChatColor.GRAY
                             + " • The test was not queued.");
+            default -> throw new IllegalStateException(
+                    "Unexpected webhook test result: " + result);
         }
     }
 
@@ -176,9 +179,8 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             GuardianService guardian) {
 
         List<PluginHealth> health = guardian.health();
-        long healthyCount = health.stream()
-                .filter(PluginHealth::healthy)
-                .count();
+        long healthyCount = health.stream().filter(
+                PluginHealth::healthy).count();
 
         sender.sendMessage(
                 ChatColor.DARK_GRAY
@@ -212,7 +214,8 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
                         + state(guardian.settings().discord().configured()));
         sender.sendMessage(
                 ChatColor.DARK_GRAY
-                        + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        + "━━━━━━━━━━━━━━━━━━━━━━"
+                        + "━━━━━━━━━━━━━━━━━━━━━━");
     }
 
     private void sendPluginHealth(
@@ -239,9 +242,7 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
                             + ChatColor.DARK_GRAY
                             + " — "
                             + color
-                            + pluginHealth.state()
-                                    .name()
-                                    .toLowerCase(Locale.ROOT)
+                            + pluginHealth.state().name().toLowerCase(Locale.ROOT)
                             + detectedName);
         }
     }
@@ -250,15 +251,13 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             CommandSender sender,
             Optional<Incident> incident) {
 
-        String incidentId = incident
-                .map(value -> ChatColor.RED + value.incidentId())
-                .orElse(ChatColor.GREEN + "none");
-        int restartAttempts = incident
-                .map(Incident::automaticRestartAttempts)
-                .orElse(0);
-        boolean restartArmed = incident
-                .map(Incident::automaticRestartArmed)
-                .orElse(true);
+        String incidentId = incident.map(
+                value -> ChatColor.RED + value.incidentId()).orElse(
+                        ChatColor.GREEN + "none");
+        int restartAttempts = incident.map(
+                Incident::automaticRestartAttempts).orElse(0);
+        boolean restartArmed = incident.map(
+                Incident::automaticRestartArmed).orElse(true);
 
         sender.sendMessage(
                 ChatColor.GRAY
@@ -354,8 +353,7 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             List<String> candidates) {
 
         String normalizedInput = input.toLowerCase(Locale.ROOT);
-        return candidates.stream()
-                .filter(candidate -> candidate.startsWith(normalizedInput))
-                .toList();
+        return candidates.stream().filter(
+                candidate -> candidate.startsWith(normalizedInput)).toList();
     }
 }

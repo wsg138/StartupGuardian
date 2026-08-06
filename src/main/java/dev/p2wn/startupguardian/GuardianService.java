@@ -146,8 +146,8 @@ public final class GuardianService {
 
     private void check(boolean enforce, CommandSender sender) {
         List<PluginHealth> pluginHealth = health();
-        List<PluginHealth> failedPlugins = pluginHealth.stream()
-                .filter(health -> !health.healthy()).toList();
+        List<PluginHealth> failedPlugins = pluginHealth.stream().filter(
+                health -> !health.healthy()).toList();
 
         if (failedPlugins.isEmpty()) {
             recoverIfNeeded();
@@ -481,12 +481,11 @@ public final class GuardianService {
     private String describe(List<PluginHealth> failedPlugins) {
         return String.join(
                 ", ",
-                failedPlugins.stream()
-                        .map(health -> health.configuredName()
+                failedPlugins.stream().map(
+                        health -> health.configuredName()
                                 + " ("
                                 + health.state().name().toLowerCase(Locale.ROOT)
-                                + ")")
-                        .toList());
+                                + ")").toList());
     }
 
     private record ProtectionResult(
