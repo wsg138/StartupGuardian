@@ -293,17 +293,6 @@ public final class WebhookClient implements GuardianNotifier, AutoCloseable {
     }
 }
 
-interface WebhookTasks {
-
-    boolean submit(Runnable task);
-
-    boolean schedule(Runnable task, long delayMillis);
-
-    boolean closed();
-
-    void close();
-}
-
 final class ScheduledWebhookTasks implements WebhookTasks {
 
     private final ScheduledExecutorService executor;
@@ -381,19 +370,6 @@ final class ScheduledWebhookTasks implements WebhookTasks {
             executor.shutdownNow();
             Thread.currentThread().interrupt();
         }
-    }
-}
-
-interface WebhookTransport {
-
-    WebhookResponse send(String webhookUrl, String payload)
-            throws IOException, InterruptedException;
-}
-
-record WebhookResponse(int statusCode, Optional<String> retryAfter) {
-
-    WebhookResponse {
-        Objects.requireNonNull(retryAfter, "retryAfter");
     }
 }
 
