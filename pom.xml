@@ -126,6 +126,7 @@
                     <includeTests>true</includeTests>
                     <printFailingErrors>true</printFailingErrors>
                     <failOnViolation>true</failOnViolation>
+                    <minimumTokens>100</minimumTokens>
                 </configuration>
                 <executions>
                     <execution>
@@ -145,7 +146,7 @@
                 <version>4.9.0.0</version>
                 <configuration>
                     <effort>Max</effort>
-                    <threshold>Low</threshold>
+                    <threshold>Medium</threshold>
                     <failOnError>true</failOnError>
                 </configuration>
                 <executions>

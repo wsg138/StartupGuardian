@@ -2,6 +2,9 @@ package dev.p2wn.startupguardian;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -11,42 +14,48 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public final class WebhookClient implements AutoCloseable {
+public final class WebhookClient implements GuardianNotifier, AutoCloseable {
 
-    private static final int DISCORD_CONTENT_LIMIT = 2_000;
-    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(8);
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(12);
+    static final int DISCORD_CONTENT_LIMIT = 2_000;
+
+    static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(8);
+    static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(12);
+    private static final Duration SHUTDOWN_GRACE = Duration.ofSeconds(2);
+    private static final long MAX_RETRY_AFTER_MILLIS = 30_000L;
+    private static final int MAX_RATE_LIMIT_RETRIES = 1;
 
     private final Logger logger;
-    private final ScheduledExecutorService executor;
-    private final HttpClient client;
+    private final WebhookTasks tasks;
+    private final WebhookTransport transport;
 
     public WebhookClient(Logger logger) {
-        this.logger = Objects.requireNonNull(logger, "logger");
-
-        AtomicInteger threadNumber = new AtomicInteger();
-        executor = Executors.newScheduledThreadPool(2, runnable -> {
-            Thread thread = new Thread(
-                    runnable,
-                    "StartupGuardian-Webhook-" + threadNumber.incrementAndGet());
-            thread.setDaemon(true);
-            return thread;
-        });
-
-        client = HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
-                .executor(executor)
-                .build();
+        this(
+                logger,
+                new ScheduledWebhookTasks(SHUTDOWN_GRACE),
+                new JdkWebhookTransport());
     }
 
+    WebhookClient(Logger logger, WebhookTasks tasks, WebhookTransport transport) {
+        this.logger = Objects.requireNonNull(logger, "logger");
+        this.tasks = Objects.requireNonNull(tasks, "tasks");
+        this.transport = Objects.requireNonNull(transport, "transport");
+    }
+
+    @Override
     public void incident(
             Settings settings,
             Incident incident,
@@ -58,7 +67,7 @@ public final class WebhookClient implements AutoCloseable {
                 + "Failures: " + failures(incident) + "\n"
                 + "Restart attempts: " + incident.automaticRestartAttempts() + "\n"
                 + "Whitelist enabled: " + whitelisted + "\n"
-                + "Restart scheduled: " + restartScheduled + "\n"
+                + "Restart planned: " + restartScheduled + "\n"
                 + "Detected: " + incident.lastDetection();
 
         String reminder = "⚠️ **Critical startup failure requires staff attention.** "
@@ -67,20 +76,41 @@ public final class WebhookClient implements AutoCloseable {
         sendIncidentAlerts(settings, detail, reminder);
     }
 
+    @Override
+    public void persistenceFailure(Settings settings, Incident incident) {
+        String message = "**StartupGuardian persistence failure**\n"
+                + "Incident candidate: `" + incident.incidentId() + "`\n"
+                + "The incident marker could not be saved. StartupGuardian did not change "
+                + "the whitelist, kick players, or schedule a new restart.";
+        queue(settings, message);
+    }
+
+    @Override
     public void recovery(Settings settings, Incident incident) {
         long durationSeconds = Duration.between(
                 incident.firstDetection(),
                 Instant.now()).toSeconds();
 
-        send(settings, "**" + settings.messages().recoveryTitle() + "**\n"
+        queue(settings, "**" + settings.messages().recoveryTitle() + "**\n"
                 + "Incident: `" + incident.incidentId() + "`\n"
                 + "Previous failures: " + failures(incident) + "\n"
                 + "Incident duration: " + durationSeconds + " seconds");
     }
 
-    public void test(Settings settings) {
-        send(settings, "StartupGuardian webhook test. "
-                + "No server protection action was taken.");
+    @Override
+    public WebhookTestResult test(Settings settings) {
+        Objects.requireNonNull(settings, "settings");
+        if (tasks.closed()) {
+            return WebhookTestResult.CLOSED;
+        }
+        if (!settings.discord().configured()) {
+            return WebhookTestResult.NOT_CONFIGURED;
+        }
+
+        boolean queued = queue(
+                settings,
+                "StartupGuardian webhook test. No server protection action was taken.");
+        return queued ? WebhookTestResult.QUEUED : WebhookTestResult.CLOSED;
     }
 
     static List<Long> repeatDelays(int repeats, int delayMillis) {
@@ -98,75 +128,11 @@ public final class WebhookClient implements AutoCloseable {
         return List.copyOf(delays);
     }
 
-    private void sendIncidentAlerts(
-            Settings settings,
-            String detail,
-            String reminder) {
+    static String payload(Settings settings, String message) {
+        String content = truncate(
+                mentions(settings) + Objects.requireNonNull(message, "message"),
+                DISCORD_CONTENT_LIMIT);
 
-        if (!settings.discord().configured()) {
-            return;
-        }
-
-        List<Long> delays = repeatDelays(
-                settings.discord().repeats(),
-                settings.discord().delayMillis());
-
-        send(settings, detail);
-        for (int index = 1; index < delays.size(); index++) {
-            long delay = delays.get(index);
-            try {
-                executor.schedule(
-                        () -> send(settings, reminder),
-                        delay,
-                        TimeUnit.MILLISECONDS);
-            } catch (RejectedExecutionException exception) {
-                logger.log(
-                        Level.FINE,
-                        "[StartupGuardian] Webhook executor was already closed.",
-                        exception);
-                return;
-            }
-        }
-    }
-
-    private String failures(Incident incident) {
-        return String.join(
-                ", ",
-                incident.failures().stream()
-                        .map(failure -> "`" + failure.configuredName()
-                                + "` (" + failure.status() + ")")
-                        .toList());
-    }
-
-    private void send(Settings settings, String message) {
-        if (!settings.discord().configured()) {
-            return;
-        }
-
-        try {
-            String content = truncate(
-                    mentions(settings) + message,
-                    DISCORD_CONTENT_LIMIT);
-            HttpRequest request = buildRequest(settings, content);
-
-            client.sendAsync(request, HttpResponse.BodyHandlers.discarding())
-                    .thenAccept(response -> handleResponse(response.statusCode()))
-                    .exceptionally(exception -> {
-                        logger.log(
-                                Level.WARNING,
-                                "[StartupGuardian] Discord webhook request failed: {0}",
-                                exception.getClass().getSimpleName());
-                        return null;
-                    });
-        } catch (IllegalArgumentException | RejectedExecutionException exception) {
-            logger.log(
-                    Level.WARNING,
-                    "[StartupGuardian] Discord webhook configuration/request failed: {0}",
-                    exception.getClass().getSimpleName());
-        }
-    }
-
-    private HttpRequest buildRequest(Settings settings, String content) {
         JsonObject payload = new JsonObject();
         payload.addProperty("content", content);
         payload.addProperty("username", settings.discord().username());
@@ -185,24 +151,127 @@ public final class WebhookClient implements AutoCloseable {
         allowedMentions.add("users", users);
         allowedMentions.add("parse", new JsonArray());
         payload.add("allowed_mentions", allowedMentions);
-
-        return HttpRequest.newBuilder(URI.create(settings.discord().webhookUrl()))
-                .timeout(REQUEST_TIMEOUT)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
-                .build();
+        return payload.toString();
     }
 
-    private void handleResponse(int statusCode) {
-        if (statusCode < 200 || statusCode >= 300) {
-            logger.log(
-                    Level.WARNING,
-                    "[StartupGuardian] Discord webhook returned HTTP {0}",
-                    statusCode);
+    private void sendIncidentAlerts(
+            Settings settings,
+            String detail,
+            String reminder) {
+
+        if (!settings.discord().configured() || tasks.closed()) {
+            return;
+        }
+
+        List<Long> delays = repeatDelays(
+                settings.discord().repeats(),
+                settings.discord().delayMillis());
+
+        queue(settings, detail);
+        for (int index = 1; index < delays.size(); index++) {
+            long delay = delays.get(index);
+            String requestPayload = payload(settings, reminder);
+            tasks.schedule(
+                    () -> deliver(settings.discord().webhookUrl(), requestPayload, 0),
+                    delay);
         }
     }
 
-    private String mentions(Settings settings) {
+    private String failures(Incident incident) {
+        return String.join(
+                ", ",
+                incident.failures().stream()
+                        .map(failure -> "`" + failure.configuredName()
+                                + "` (" + failure.status() + ")")
+                        .toList());
+    }
+
+    private boolean queue(Settings settings, String message) {
+        if (!settings.discord().configured() || tasks.closed()) {
+            return false;
+        }
+
+        String requestPayload = payload(settings, message);
+        return tasks.submit(() -> deliver(
+                settings.discord().webhookUrl(),
+                requestPayload,
+                0));
+    }
+
+    private void deliver(String webhookUrl, String requestPayload, int retryNumber) {
+        try {
+            WebhookResponse response = transport.send(webhookUrl, requestPayload);
+            handleResponse(webhookUrl, requestPayload, response, retryNumber);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            logger.log(
+                    Level.FINE,
+                    "[StartupGuardian] Discord webhook delivery was interrupted.");
+        } catch (IOException | IllegalArgumentException exception) {
+            logger.log(
+                    Level.WARNING,
+                    "[StartupGuardian] Discord webhook request failed: {0}",
+                    exception.getClass().getSimpleName());
+        }
+    }
+
+    private void handleResponse(
+            String webhookUrl,
+            String requestPayload,
+            WebhookResponse response,
+            int retryNumber) {
+
+        int statusCode = response.statusCode();
+        if (statusCode >= 200 && statusCode < 300) {
+            return;
+        }
+
+        if (statusCode == 429 && retryNumber < MAX_RATE_LIMIT_RETRIES) {
+            Optional<Long> retryDelay = parseRetryAfter(response.retryAfter());
+            if (retryDelay.isPresent()) {
+                boolean scheduled = tasks.schedule(
+                        () -> deliver(webhookUrl, requestPayload, retryNumber + 1),
+                        retryDelay.orElseThrow());
+                if (scheduled) {
+                    logger.log(
+                            Level.WARNING,
+                            "[StartupGuardian] Discord rate limited a webhook; "
+                                    + "one bounded retry was scheduled.");
+                    return;
+                }
+            }
+        }
+
+        logger.log(
+                Level.WARNING,
+                "[StartupGuardian] Discord webhook returned HTTP {0}",
+                statusCode);
+    }
+
+    private Optional<Long> parseRetryAfter(Optional<String> header) {
+        if (header.isEmpty()) {
+            return Optional.empty();
+        }
+
+        try {
+            BigDecimal seconds = new BigDecimal(header.orElseThrow().trim());
+            if (seconds.signum() < 0) {
+                return Optional.empty();
+            }
+            long milliseconds = seconds
+                    .multiply(BigDecimal.valueOf(1_000L))
+                    .setScale(0, RoundingMode.CEILING)
+                    .longValueExact();
+            return Optional.of(Math.min(milliseconds, MAX_RETRY_AFTER_MILLIS));
+        } catch (ArithmeticException | NumberFormatException exception) {
+            logger.log(
+                    Level.FINE,
+                    "[StartupGuardian] Discord Retry-After header was invalid.");
+            return Optional.empty();
+        }
+    }
+
+    private static String mentions(Settings settings) {
         StringBuilder builder = new StringBuilder();
         settings.discord().roleIds().forEach(id ->
                 builder.append("<@&").append(id).append("> "));
@@ -220,6 +289,134 @@ public final class WebhookClient implements AutoCloseable {
 
     @Override
     public void close() {
-        executor.shutdownNow();
+        tasks.close();
+    }
+}
+
+interface WebhookTasks {
+
+    boolean submit(Runnable task);
+
+    boolean schedule(Runnable task, long delayMillis);
+
+    boolean closed();
+
+    void close();
+}
+
+final class ScheduledWebhookTasks implements WebhookTasks {
+
+    private final ScheduledExecutorService executor;
+    private final Duration shutdownGrace;
+    private final Set<Future<?>> submittedTasks = ConcurrentHashMap.newKeySet();
+    private final Set<ScheduledFuture<?>> delayedTasks = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    ScheduledWebhookTasks(Duration shutdownGrace) {
+        this.shutdownGrace = Objects.requireNonNull(shutdownGrace, "shutdownGrace");
+        AtomicInteger threadNumber = new AtomicInteger();
+        executor = Executors.newScheduledThreadPool(2, runnable -> {
+            Thread thread = new Thread(
+                    runnable,
+                    "StartupGuardian-Webhook-" + threadNumber.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    @Override
+    public boolean submit(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        if (closed()) {
+            return false;
+        }
+        try {
+            submittedTasks.add(executor.submit(task));
+            return true;
+        } catch (RejectedExecutionException exception) {
+            return false;
+        }
+    }
+
+    @Override
+    public boolean schedule(Runnable task, long delayMillis) {
+        Objects.requireNonNull(task, "task");
+        if (closed()) {
+            return false;
+        }
+        try {
+            delayedTasks.add(executor.schedule(
+                    () -> {
+                        if (!closed()) {
+                            task.run();
+                        }
+                    },
+                    delayMillis,
+                    TimeUnit.MILLISECONDS));
+            return true;
+        } catch (RejectedExecutionException exception) {
+            return false;
+        }
+    }
+
+    @Override
+    public boolean closed() {
+        return closed.get();
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+
+        delayedTasks.forEach(task -> task.cancel(false));
+        submittedTasks.forEach(task -> task.cancel(false));
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(shutdownGrace.toMillis(), TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException exception) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+
+interface WebhookTransport {
+
+    WebhookResponse send(String webhookUrl, String payload)
+            throws IOException, InterruptedException;
+}
+
+record WebhookResponse(int statusCode, Optional<String> retryAfter) {
+
+    WebhookResponse {
+        Objects.requireNonNull(retryAfter, "retryAfter");
+    }
+}
+
+final class JdkWebhookTransport implements WebhookTransport {
+
+    private final HttpClient client = HttpClient.newBuilder()
+            .connectTimeout(WebhookClient.CONNECT_TIMEOUT)
+            .build();
+
+    @Override
+    public WebhookResponse send(String webhookUrl, String payload)
+            throws IOException, InterruptedException {
+
+        HttpRequest request = HttpRequest.newBuilder(URI.create(webhookUrl))
+                .timeout(WebhookClient.REQUEST_TIMEOUT)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
+                .build();
+        HttpResponse<Void> response = client.send(
+                request,
+                HttpResponse.BodyHandlers.discarding());
+        return new WebhookResponse(
+                response.statusCode(),
+                response.headers().firstValue("Retry-After"));
     }
 }

@@ -34,9 +34,14 @@ public final class StartupGuardianPlugin extends JavaPlugin implements Listener 
             return;
         }
 
-        IncidentStore store = new IncidentStore(getDataFolder().toPath());
+        IncidentStore store = new IncidentStore(getDataFolder().toPath(), getLogger());
         webhook = new WebhookClient(getLogger());
-        guardianService = new GuardianService(this, settings, store, webhook);
+        guardianService = new GuardianService(
+                getLogger(),
+                settings,
+                store,
+                webhook,
+                new BukkitGuardianEnvironment(this));
 
         GuardianCommand commandHandler = new GuardianCommand(this);
         PluginCommand command = Objects.requireNonNull(

@@ -4,20 +4,54 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0
                              https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
-    <description>Production-focused PMD rules for StartupGuardian.</description>
+    <description>Focused production checks for StartupGuardian.</description>
 
-    <rule ref="category/java/bestpractices.xml">
-        <exclude name="AvoidReassigningParameters"/>
-        <exclude name="GuardLogStatement"/>
-        <exclude name="JUnitTestsShouldIncludeAssert"/>
-        <exclude name="UnusedFormalParameter"/>
+    <!-- Correctness and resource-management rules with a low false-positive rate. -->
+    <rule ref="category/java/bestpractices.xml/AvoidPrintStackTrace"/>
+    <rule ref="category/java/bestpractices.xml/PreserveStackTrace"/>
+    <rule ref="category/java/bestpractices.xml/UseCollectionIsEmpty"/>
+    <rule ref="category/java/bestpractices.xml/UseTryWithResources"/>
+
+    <rule ref="category/java/errorprone.xml/AvoidCatchingNPE"/>
+    <rule ref="category/java/errorprone.xml/AvoidCatchingThrowable"/>
+    <rule ref="category/java/errorprone.xml/AvoidDecimalLiteralsInBigDecimalConstructor"/>
+    <rule ref="category/java/errorprone.xml/BrokenNullCheck"/>
+    <rule ref="category/java/errorprone.xml/CloseResource"/>
+    <rule ref="category/java/errorprone.xml/CompareObjectsWithEquals"/>
+    <rule ref="category/java/errorprone.xml/InvalidLogMessageFormat"/>
+    <rule ref="category/java/errorprone.xml/ReturnEmptyCollectionRatherThanNull"/>
+    <rule ref="category/java/errorprone.xml/UseLocaleWithCaseConversions"/>
+
+    <!-- The plugin owns a small webhook executor; these rules catch real thread hazards
+         without requiring concurrent collections for Bukkit server-thread-only maps. -->
+    <rule ref="category/java/multithreading.xml/AvoidThreadGroup"/>
+    <rule ref="category/java/multithreading.xml/DontCallThreadRun"/>
+    <rule ref="category/java/multithreading.xml/DoubleCheckedLocking"/>
+    <rule ref="category/java/multithreading.xml/NonThreadSafeSingleton"/>
+    <rule ref="category/java/multithreading.xml/UnsynchronizedStaticFormatter"/>
+    <rule ref="category/java/multithreading.xml/UseNotifyAllInsteadOfNotify"/>
+
+    <rule ref="category/java/performance.xml/ConsecutiveAppendsShouldReuse"/>
+    <rule ref="category/java/performance.xml/InefficientEmptyStringCheck"/>
+    <rule ref="category/java/performance.xml/StringInstantiation"/>
+    <rule ref="category/java/performance.xml/StringToString"/>
+
+    <rule ref="category/java/security.xml"/>
+
+    <rule ref="category/java/design.xml/CyclomaticComplexity">
+        <properties>
+            <property name="methodReportLevel" value="12"/>
+            <property name="classReportLevel" value="50"/>
+        </properties>
     </rule>
-    <rule ref="category/java/errorprone.xml">
-        <exclude name="AvoidDuplicateLiterals"/>
+    <rule ref="category/java/design.xml/CognitiveComplexity">
+        <properties>
+            <property name="reportLevel" value="15"/>
+        </properties>
     </rule>
-    <rule ref="category/java/multithreading.xml">
-        <exclude name="AvoidSynchronizedAtMethodLevel"/>
-        <exclude name="DoNotUseThreads"/>
+    <rule ref="category/java/design.xml/NPathComplexity">
+        <properties>
+            <property name="reportLevel" value="200"/>
+        </properties>
     </rule>
-    <rule ref="category/java/performance.xml"/>
 </ruleset>

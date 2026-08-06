@@ -4,17 +4,25 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.io.IOException;
+import java.nio.file.CopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class IncidentStateTest {
 
     private static final Logger LOGGER = Logger.getAnonymousLogger();
+    private static final String INCIDENT_ID = "00000000-0000-0000-0000-000000000001";
+    private static final String FIRST_DETECTION = "2026-08-06T12:00:00Z";
+    private static final String LAST_DETECTION = "2026-08-06T12:01:00Z";
 
     private final List<PluginHealth> failed = List.of(
             new PluginHealth(
@@ -22,64 +30,188 @@ class IncidentStateTest {
                     "WorldGuard",
                     PluginHealth.State.DISABLED));
 
-    @Test
-    void restartCountPersistsAcrossObservations() {
-        Incident incident = Incident.create(failed, true, false)
-                .withRestartScheduled()
-                .observed(failed);
-
-        assertEquals(1, incident.automaticRestartAttempts());
-        assertTrue(incident.previousWhitelistEnabled());
-        assertFalse(incident.guardianEnabledWhitelist());
-        assertTrue(incident.automaticRestartArmed());
-    }
+    @TempDir
+    Path directory;
 
     @Test
-    void markerRoundTripsAndMalformedFileIsQuarantined() throws IOException {
-        Path directory = Files.createTempDirectory("guardian-test");
-        IncidentStore store = new IncidentStore(directory);
+    void currentSchemaRoundTrips() throws IOException {
+        IncidentStore store = new IncidentStore(directory, LOGGER);
         Incident original = Incident.create(failed, false, true)
                 .withRestartScheduled();
 
         store.save(original);
-        assertEquals(
-                original.incidentId(),
-                store.load(LOGGER).orElseThrow().incidentId());
+        String json = Files.readString(store.path());
+        Optional<Incident> loaded = new IncidentStore(directory, LOGGER).load();
 
-        IncidentStore malformedStore = new IncidentStore(directory);
-        Files.writeString(malformedStore.path(), "not json");
-        assertTrue(malformedStore.load(LOGGER).isEmpty());
-        assertTrue(malformedStore.corrupted());
+        assertTrue(json.contains("\"schemaVersion\": 1"));
+        assertEquals(original, loaded.orElseThrow());
+    }
 
+    @Test
+    void validLegacyMarkerRemainsReadable() throws IOException {
+        IncidentStore store = new IncidentStore(directory, LOGGER);
+        Files.writeString(store.path(), legacyMarker());
+
+        Incident incident = store.load().orElseThrow();
+        store.save(incident);
+        JsonObject migrated = JsonParser.parseString(
+                Files.readString(store.path())).getAsJsonObject();
+
+        assertEquals(INCIDENT_ID, incident.incidentId());
+        assertEquals(1, incident.automaticRestartAttempts());
+        assertFalse(incident.restartLoopStopped());
+        assertEquals(IncidentStore.CURRENT_SCHEMA_VERSION,
+                migrated.get("schemaVersion").getAsInt());
+    }
+
+    @Test
+    void missingRestartCountIsRejected() throws IOException {
+        JsonObject marker = parsedCurrentMarker();
+        marker.remove("automaticRestartAttempts");
+
+        assertRejected(marker.toString());
+    }
+
+    @Test
+    void missingWhitelistFieldsAreRejected() throws IOException {
+        JsonObject marker = parsedCurrentMarker();
+        marker.remove("previousWhitelistEnabled");
+        marker.remove("guardianEnabledWhitelist");
+
+        assertRejected(marker.toString());
+    }
+
+    @Test
+    void missingFailuresAreRejected() throws IOException {
+        JsonObject marker = parsedCurrentMarker();
+        marker.remove("failures");
+
+        assertRejected(marker.toString());
+    }
+
+    @Test
+    void wrongJsonTypesAreRejected() throws IOException {
+        JsonObject marker = parsedCurrentMarker();
+        marker.addProperty("automaticRestartAttempts", "1");
+        marker.addProperty("guardianEnabledWhitelist", 1);
+
+        assertRejected(marker.toString());
+    }
+
+    @Test
+    void unsupportedFutureSchemaIsRejected() throws IOException {
+        JsonObject marker = parsedCurrentMarker();
+        marker.addProperty("schemaVersion", 99);
+
+        assertRejected(marker.toString());
+    }
+
+    @Test
+    void malformedJsonIsRejected() throws IOException {
+        assertRejected("{not-json");
+    }
+
+    @Test
+    void successfulQuarantineMovesTheInvalidMarker() throws IOException {
+        IncidentStore store = new IncidentStore(directory, LOGGER);
+        Files.writeString(store.path(), "{}");
+
+        assertTrue(store.load().isEmpty());
+        assertTrue(store.corrupted());
+        assertFalse(Files.exists(store.path()));
         try (Stream<Path> paths = Files.list(directory)) {
-            assertTrue(paths.anyMatch(path ->
-                    path.getFileName().toString().contains("corrupt")));
+            assertTrue(paths.anyMatch(path -> path.getFileName().toString().contains("corrupt")));
         }
     }
 
     @Test
-    void structurallyIncompleteJsonIsRejected() throws IOException {
-        Path directory = Files.createTempDirectory("guardian-incomplete-test");
-        IncidentStore store = new IncidentStore(directory);
+    void quarantineFailureLeavesSafetyLatchSet() throws IOException {
+        IncidentStore.FileMover failingMover = (
+                Path source,
+                Path target,
+                CopyOption... options) -> {
+            throw new IOException("forced move failure");
+        };
+        IncidentStore store = new IncidentStore(directory, LOGGER, failingMover);
         Files.writeString(store.path(), "{}");
 
-        assertTrue(store.load(LOGGER).isEmpty());
+        assertTrue(store.load().isEmpty());
         assertTrue(store.corrupted());
+        assertTrue(store.quarantineFailed());
+        assertTrue(Files.exists(store.path()));
     }
 
     @Test
-    void cachedStateTracksSaveAndClearWithoutRepeatedDiskReads()
-            throws IOException {
+    void restartCountPersistsAcrossStoreInstances() throws IOException {
+        IncidentStore firstStore = new IncidentStore(directory, LOGGER);
+        Incident incident = Incident.create(failed, true, false)
+                .withRestartScheduled()
+                .observed(failed);
+        firstStore.save(incident);
 
-        Path directory = Files.createTempDirectory("guardian-cache-test");
-        IncidentStore store = new IncidentStore(directory);
+        Incident reloaded = new IncidentStore(directory, LOGGER).load().orElseThrow();
 
-        assertFalse(store.hasActiveIncident(LOGGER));
-        Incident incident = Incident.create(failed, false, true);
-        store.save(incident);
-        assertTrue(store.hasActiveIncident(LOGGER));
+        assertEquals(1, reloaded.automaticRestartAttempts());
+        assertTrue(reloaded.previousWhitelistEnabled());
+        assertFalse(reloaded.guardianEnabledWhitelist());
+    }
 
+    @Test
+    void cachedStateTracksSaveAndClear() throws IOException {
+        IncidentStore store = new IncidentStore(directory, LOGGER);
+
+        assertFalse(store.hasActiveIncident());
+        store.save(Incident.create(failed, false, true));
+        assertTrue(store.hasActiveIncident());
         store.clear();
-        assertFalse(store.hasActiveIncident(LOGGER));
+        assertFalse(store.hasActiveIncident());
+    }
+
+    private void assertRejected(String json) throws IOException {
+        IncidentStore store = new IncidentStore(directory, LOGGER);
+        Files.writeString(store.path(), json);
+
+        assertTrue(store.load().isEmpty());
+        assertTrue(store.corrupted());
+    }
+
+    private static String currentMarker() {
+        return """
+                {
+                  "incidentId": "%s",
+                  "firstDetection": "%s",
+                  "lastDetection": "%s",
+                  "failures": [
+                    {"configuredName": "WorldGuard", "detectedName": "WorldGuard", "status": "disabled"}
+                  ],
+                  "previousWhitelistEnabled": false,
+                  "guardianEnabledWhitelist": true,
+                  "automaticRestartAttempts": 1,
+                  "restartLoopStopped": false,
+                  "schemaVersion": 1
+                }
+                """.formatted(INCIDENT_ID, FIRST_DETECTION, LAST_DETECTION);
+    }
+
+    private static JsonObject parsedCurrentMarker() {
+        return JsonParser.parseString(currentMarker()).getAsJsonObject();
+    }
+
+    private static String legacyMarker() {
+        return """
+                {
+                  "incidentId": "%s",
+                  "firstDetection": "%s",
+                  "lastDetection": "%s",
+                  "failures": [
+                    {"configuredName": "WorldGuard", "detectedName": "WorldGuard", "status": "disabled"}
+                  ],
+                  "previousWhitelistEnabled": false,
+                  "guardianEnabledWhitelist": true,
+                  "automaticRestartAttempts": 1,
+                  "restartLoopStopped": false,
+                  "automaticRestartArmed": true
+                }
+                """.formatted(INCIDENT_ID, FIRST_DETECTION, LAST_DETECTION);
     }
 }

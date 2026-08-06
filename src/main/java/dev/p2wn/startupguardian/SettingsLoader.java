@@ -23,18 +23,31 @@ public final class SettingsLoader {
     public static Settings load(FileConfiguration config) {
         Objects.requireNonNull(config, "config");
 
-        List<String> plugins = requiredPlugins(config.getStringList("required-plugins"));
-        int graceTicks = bounded(
-                config.getInt("startup-check.grace-period-ticks", DEFAULT_GRACE_TICKS),
-                0,
-                20 * 60,
-                DEFAULT_GRACE_TICKS);
+        return new Settings(
+                requiredPlugins(config.getStringList("required-plugins")),
+                bounded(
+                        config.getInt(
+                                "startup-check.grace-period-ticks",
+                                DEFAULT_GRACE_TICKS),
+                        0,
+                        20 * 60,
+                        DEFAULT_GRACE_TICKS),
+                protection(config),
+                restartLoop(config),
+                discord(config),
+                bypass(config),
+                messages(config));
+    }
 
-        Settings.Protection protection = new Settings.Protection(
+    private static Settings.Protection protection(FileConfiguration config) {
+        return new Settings.Protection(
                 config.getBoolean("protection.enable-whitelist", true),
                 config.getBoolean("protection.kick-online-players", true),
                 config.getBoolean("protection.emergency-kick-ops", false),
-                text(config, "protection.kick-message", "The server entered emergency maintenance."),
+                text(
+                        config,
+                        "protection.kick-message",
+                        "The server entered emergency maintenance."),
                 bounded(
                         config.getInt(
                                 "protection.restart-delay-seconds",
@@ -47,8 +60,10 @@ public final class SettingsLoader {
                 config.getBoolean(
                         "protection.restore-previous-whitelist-state-after-recovery",
                         true));
+    }
 
-        Settings.Loop loop = new Settings.Loop(
+    private static Settings.Loop restartLoop(FileConfiguration config) {
+        return new Settings.Loop(
                 config.getBoolean("restart-loop-protection.enabled", true),
                 bounded(
                         config.getInt(
@@ -57,8 +72,10 @@ public final class SettingsLoader {
                         0,
                         10,
                         DEFAULT_RESTARTS));
+    }
 
-        Settings.Discord discord = new Settings.Discord(
+    private static Settings.Discord discord(FileConfiguration config) {
+        return new Settings.Discord(
                 config.getBoolean("discord.enabled", true),
                 text(config, "discord.webhook-url", ""),
                 cleanIds(config.getStringList("discord.staff-mentions.role-ids")),
@@ -77,24 +94,28 @@ public final class SettingsLoader {
                         DEFAULT_ALERT_DELAY_MILLIS),
                 text(config, "discord.username", "Startup Guardian"),
                 text(config, "discord.avatar-url", ""));
+    }
 
-        Settings.Bypass bypass = new Settings.Bypass(
+    private static Settings.Bypass bypass(FileConfiguration config) {
+        return new Settings.Bypass(
                 cleanUuids(config.getStringList("critical-mode-bypass.player-uuids")),
-                text(config, "critical-mode-bypass.permission", "startupguardian.bypass"),
+                text(
+                        config,
+                        "critical-mode-bypass.permission",
+                        "startupguardian.bypass"),
                 config.getBoolean("critical-mode-bypass.allow-ops", false));
+    }
 
-        Settings.Messages messages = new Settings.Messages(
-                text(config, "messages.incident-title", "CRITICAL SERVER STARTUP FAILURE"),
-                text(config, "messages.recovery-title", "Server startup recovered"));
-
-        return new Settings(
-                plugins,
-                graceTicks,
-                protection,
-                loop,
-                discord,
-                bypass,
-                messages);
+    private static Settings.Messages messages(FileConfiguration config) {
+        return new Settings.Messages(
+                text(
+                        config,
+                        "messages.incident-title",
+                        "CRITICAL SERVER STARTUP FAILURE"),
+                text(
+                        config,
+                        "messages.recovery-title",
+                        "Server startup recovered"));
     }
 
     private static List<String> requiredPlugins(List<String> configuredNames) {

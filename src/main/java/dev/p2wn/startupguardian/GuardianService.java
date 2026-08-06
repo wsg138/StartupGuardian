@@ -9,36 +9,33 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import net.kyori.adventure.text.minimessage.MiniMessage;
-import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
 
 public final class GuardianService {
 
-    private final Plugin plugin;
     private final Logger logger;
-    private final IncidentStore store;
-    private final WebhookClient webhook;
+    private final IncidentRepository store;
+    private final GuardianNotifier notifier;
+    private final GuardianEnvironment environment;
     private final AtomicBoolean handling = new AtomicBoolean();
 
-    private volatile Settings currentSettings;
-    private BukkitTask restartTask;
+    private Settings currentSettings;
+    private Optional<GuardianEnvironment.RestartTask> restartTask = Optional.empty();
 
     public GuardianService(
-            Plugin plugin,
+            Logger logger,
             Settings settings,
-            IncidentStore store,
-            WebhookClient webhook) {
+            IncidentRepository store,
+            GuardianNotifier notifier,
+            GuardianEnvironment environment) {
 
-        this.plugin = Objects.requireNonNull(plugin, "plugin");
-        this.logger = plugin.getLogger();
-        this.currentSettings = Objects.requireNonNull(settings, "settings");
+        this.logger = Objects.requireNonNull(logger, "logger");
+        currentSettings = Objects.requireNonNull(settings, "settings");
         this.store = Objects.requireNonNull(store, "store");
-        this.webhook = Objects.requireNonNull(webhook, "webhook");
+        this.notifier = Objects.requireNonNull(notifier, "notifier");
+        this.environment = Objects.requireNonNull(environment, "environment");
     }
 
     public void updateSettings(Settings updatedSettings) {
@@ -50,18 +47,16 @@ public final class GuardianService {
     }
 
     public List<PluginHealth> health() {
-        return PluginHealth.inspect(
-                Bukkit.getPluginManager(),
-                currentSettings.requiredPlugins());
+        return environment.inspectPlugins(currentSettings.requiredPlugins());
     }
 
     public Optional<Incident> incident() {
-        return store.load(logger);
+        return store.load();
     }
 
     public boolean allowsCriticalBypass(Player player) {
         Objects.requireNonNull(player, "player");
-        if (!Bukkit.hasWhitelist() || !store.hasActiveIncident(logger)) {
+        if (!environment.whitelistEnabled() || !store.hasActiveIncident()) {
             return false;
         }
 
@@ -99,25 +94,31 @@ public final class GuardianService {
     }
 
     public boolean reset() {
-        cancelScheduledRestart();
         try {
             store.clear();
-            return true;
         } catch (IOException exception) {
             logger.log(
                     Level.SEVERE,
-                    "[StartupGuardian] Could not reset incident.",
+                    "[StartupGuardian] Could not reset incident. "
+                            + "Any pending restart remains scheduled.",
                     exception);
             return false;
         }
+
+        cancelScheduledRestart();
+        return true;
     }
 
-    public void webhookTest() {
-        webhook.test(currentSettings);
+    public WebhookTestResult webhookTest() {
+        return notifier.test(currentSettings);
     }
 
     public void close() {
         cancelScheduledRestart();
+    }
+
+    boolean hasPendingRestart() {
+        return hasScheduledRestart();
     }
 
     private void check(boolean enforce, CommandSender sender) {
@@ -148,8 +149,6 @@ public final class GuardianService {
             return;
         }
 
-        // Every explicit enforcement is processed. RestartPolicy prevents duplicate
-        // pending restarts and enforces the persisted automatic restart cap.
         handleFailure(pluginHealth);
     }
 
@@ -159,8 +158,8 @@ public final class GuardianService {
         }
 
         try {
-            Optional<Incident> existingIncident = store.load(logger);
-            boolean previousWhitelist = Bukkit.hasWhitelist();
+            Optional<Incident> existingIncident = store.load();
+            boolean previousWhitelist = environment.whitelistEnabled();
             boolean enabledWhitelist = currentSettings.protection().whitelist()
                     && !previousWhitelist;
 
@@ -171,27 +170,28 @@ public final class GuardianService {
                             previousWhitelist,
                             enabledWhitelist));
 
-            applyProtection();
-
             RestartPolicy.Decision decision = RestartPolicy.evaluate(
                     incident,
                     currentSettings.loop(),
                     hasScheduledRestart(),
                     store.corrupted());
-            incident = decision.incident();
+            Incident persistedIncident = decision.incident();
 
-            boolean restartScheduled = decision.scheduleRestart();
-            if (!save(incident)) {
-                incident = incident.stopLoop();
-                restartScheduled = false;
+            if (!save(persistedIncident)) {
+                notifier.persistenceFailure(currentSettings, persistedIncident);
+                return;
             }
 
-            logFailure(incident, restartScheduled, Bukkit.hasWhitelist());
-            webhook.incident(
+            applyProtectionSafely();
+            boolean whitelistEnabled = environment.whitelistEnabled();
+            boolean restartScheduled = decision.scheduleRestart();
+
+            logFailure(persistedIncident, restartScheduled, whitelistEnabled);
+            notifier.incident(
                     currentSettings,
-                    incident,
+                    persistedIncident,
                     restartScheduled,
-                    Bukkit.hasWhitelist());
+                    whitelistEnabled);
 
             if (restartScheduled) {
                 scheduleRestart();
@@ -201,63 +201,77 @@ public final class GuardianService {
         }
     }
 
+    private void applyProtectionSafely() {
+        try {
+            applyProtection();
+        } catch (RuntimeException exception) {
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Incident was persisted, but emergency protection "
+                            + "could not be fully applied. The marker was retained.",
+                    exception);
+        }
+    }
+
     private void applyProtection() {
         if (!currentSettings.protection().whitelist()) {
             return;
         }
 
-        Bukkit.setWhitelist(true);
-        if (currentSettings.protection().kickPlayers()) {
-            kickPlayers();
+        environment.setWhitelist(true);
+        if (!currentSettings.protection().kickPlayers()) {
+            return;
         }
-    }
 
-    private void kickPlayers() {
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (currentSettings.protection().kickOps() || !player.isOp()) {
-                player.kick(MiniMessage.miniMessage().deserialize(
-                        currentSettings.protection().kickMessage()));
+        for (GuardianEnvironment.OnlinePlayer player : environment.onlinePlayers()) {
+            if (currentSettings.protection().kickOps() || !player.operator()) {
+                player.kick(currentSettings.protection().kickMessage());
             }
         }
     }
 
     private void scheduleRestart() {
         long delayTicks = currentSettings.protection().restartDelaySeconds() * 20L;
-        restartTask = Bukkit.getScheduler().runTaskLater(
-                plugin,
-                this::dispatchRestart,
-                delayTicks);
+        try {
+            GuardianEnvironment.RestartTask task = environment.scheduleRestart(
+                    delayTicks,
+                    this::dispatchRestart);
+            restartTask = Optional.of(task);
+        } catch (RuntimeException exception) {
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Incident was persisted, but the restart task "
+                            + "could not be scheduled.",
+                    exception);
+        }
     }
 
     private void dispatchRestart() {
-        restartTask = null;
-        boolean dispatched = Bukkit.dispatchCommand(
-                Bukkit.getConsoleSender(),
+        restartTask = Optional.empty();
+        boolean dispatched = environment.dispatchCommand(
                 currentSettings.protection().restartCommand());
 
         if (!dispatched) {
             logger.warning(
                     "[StartupGuardian] Restart command was not dispatched; "
                             + "using fallback command.");
-            Bukkit.dispatchCommand(
-                    Bukkit.getConsoleSender(),
-                    currentSettings.protection().fallbackCommand());
+            environment.dispatchCommand(currentSettings.protection().fallbackCommand());
         }
     }
 
     private boolean hasScheduledRestart() {
-        return restartTask != null && !restartTask.isCancelled();
+        return restartTask
+                .filter(task -> !task.cancelled())
+                .isPresent();
     }
 
     private void cancelScheduledRestart() {
-        if (restartTask != null) {
-            restartTask.cancel();
-            restartTask = null;
-        }
+        restartTask.ifPresent(GuardianEnvironment.RestartTask::cancel);
+        restartTask = Optional.empty();
     }
 
     private void recoverIfNeeded() {
-        Optional<Incident> activeIncident = store.load(logger);
+        Optional<Incident> activeIncident = store.load();
         if (activeIncident.isEmpty()) {
             return;
         }
@@ -268,7 +282,8 @@ public final class GuardianService {
         } catch (IOException exception) {
             logger.log(
                     Level.SEVERE,
-                    "[StartupGuardian] Could not clear recovered incident marker.",
+                    "[StartupGuardian] Could not clear recovered incident marker. "
+                            + "Recovery actions were not applied.",
                     exception);
             return;
         }
@@ -276,10 +291,10 @@ public final class GuardianService {
         cancelScheduledRestart();
         if (currentSettings.protection().restoreWhitelist()
                 && incident.guardianEnabledWhitelist()) {
-            Bukkit.setWhitelist(incident.previousWhitelistEnabled());
+            environment.setWhitelist(incident.previousWhitelistEnabled());
         }
 
-        webhook.recovery(currentSettings, incident);
+        notifier.recovery(currentSettings, incident);
         logger.log(
                 Level.WARNING,
                 "[StartupGuardian] Recovery detected for incident {0}. "
@@ -294,8 +309,9 @@ public final class GuardianService {
         } catch (IOException exception) {
             logger.log(
                     Level.SEVERE,
-                    "[StartupGuardian] Could not save incident marker; "
-                            + "automatic restart suppressed for safety.",
+                    "[StartupGuardian] Could not save incident marker. "
+                            + "Whitelist changes, player kicks, and new restart scheduling "
+                            + "were skipped for safety.",
                     exception);
             return false;
         }
@@ -343,7 +359,7 @@ public final class GuardianService {
                         + incident.incidentId()
                         + " | restart attempts: "
                         + incident.automaticRestartAttempts()
-                        + " | restart scheduled: "
+                        + " | restart planned: "
                         + restartScheduled);
         logger.severe(
                 "Whitelist enabled: "

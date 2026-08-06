@@ -49,13 +49,21 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
         String subcommand = arguments.length == 0
                 ? "help"
                 : arguments[0].toLowerCase(Locale.ROOT);
-        GuardianService guardian = plugin.guardian();
+        executeSubcommand(sender, plugin.guardian(), subcommand, arguments);
+        return true;
+    }
+
+    private void executeSubcommand(
+            CommandSender sender,
+            GuardianService guardian,
+            String subcommand,
+            String[] arguments) {
 
         switch (subcommand) {
             case "status" -> sendStatus(sender, guardian);
             case "check" -> guardian.manualCheck(
                     arguments.length > 1
-                            && arguments[1].equalsIgnoreCase("--enforce"),
+                            && "--enforce".equalsIgnoreCase(arguments[1]),
                     sender);
             case "reload" -> reload(sender, guardian);
             case "reset" -> reset(sender, guardian, arguments);
@@ -71,7 +79,6 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
                 sendHelp(sender);
             }
         }
-        return true;
     }
 
     private boolean isAuthorized(CommandSender sender) {
@@ -109,7 +116,7 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             String[] arguments) {
 
         if (arguments.length < 2
-                || !arguments[1].equalsIgnoreCase("confirm")) {
+                || !"confirm".equalsIgnoreCase(arguments[1])) {
             sender.sendMessage(
                     prefix()
                             + ChatColor.YELLOW
@@ -131,7 +138,9 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(
                     prefix()
                             + ChatColor.RED
-                            + "Could not clear the active incident.");
+                            + "Could not clear the active incident"
+                            + ChatColor.GRAY
+                            + " • Pending restart unchanged.");
         }
     }
 
@@ -139,13 +148,27 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             CommandSender sender,
             GuardianService guardian) {
 
-        guardian.webhookTest();
-        sender.sendMessage(
-                prefix()
-                        + ChatColor.AQUA
-                        + "Discord test queued"
-                        + ChatColor.GRAY
-                        + " • No protection action was taken.");
+        WebhookTestResult result = guardian.webhookTest();
+        switch (result) {
+            case QUEUED -> sender.sendMessage(
+                    prefix()
+                            + ChatColor.AQUA
+                            + "Discord test queued"
+                            + ChatColor.GRAY
+                            + " • No protection action was taken.");
+            case NOT_CONFIGURED -> sender.sendMessage(
+                    prefix()
+                            + ChatColor.YELLOW
+                            + "Discord webhook is not configured"
+                            + ChatColor.GRAY
+                            + " • Enable Discord and set a webhook URL.");
+            case CLOSED -> sender.sendMessage(
+                    prefix()
+                            + ChatColor.RED
+                            + "Discord webhook client is closed"
+                            + ChatColor.GRAY
+                            + " • The test was not queued.");
+        }
     }
 
     private void sendStatus(
@@ -285,7 +308,7 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
                 ChatColor.YELLOW
                         + "/startupguardian testdiscord"
                         + ChatColor.GRAY
-                        + " — send a safe webhook test");
+                        + " — test webhook configuration and queue state");
     }
 
     private static String prefix() {
@@ -316,11 +339,11 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             return matchesPrefix(arguments[0], SUBCOMMANDS);
         }
         if (arguments.length == 2
-                && arguments[0].equalsIgnoreCase("check")) {
+                && "check".equalsIgnoreCase(arguments[0])) {
             return matchesPrefix(arguments[1], List.of("--enforce"));
         }
         if (arguments.length == 2
-                && arguments[0].equalsIgnoreCase("reset")) {
+                && "reset".equalsIgnoreCase(arguments[0])) {
             return matchesPrefix(arguments[1], List.of("confirm"));
         }
         return List.of();
