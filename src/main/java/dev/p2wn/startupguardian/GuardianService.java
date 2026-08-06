@@ -1,57 +1,380 @@
 package dev.p2wn.startupguardian;
 
+import java.io.IOException;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import net.kyori.adventure.text.minimessage.MiniMessage;
-import org.bukkit.*;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
-import java.io.IOException;
-import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.logging.Logger;
+import org.bukkit.scheduler.BukkitTask;
 
 public final class GuardianService {
-    private final Plugin plugin; private final Logger log; private final IncidentStore store; private final WebhookClient webhook; private Settings settings; private final AtomicBoolean handling = new AtomicBoolean(); private final AtomicBoolean failureProcessed = new AtomicBoolean();
-    public GuardianService(Plugin plugin, Settings settings, IncidentStore store, WebhookClient webhook) { this.plugin = plugin; this.log = plugin.getLogger(); this.settings = settings; this.store = store; this.webhook = webhook; }
-    public void settings(Settings settings) { this.settings = settings; }
-    public Settings settings() { return settings; }
-    public List<PluginHealth> health() { return PluginHealth.inspect(Bukkit.getPluginManager(), settings.requiredPlugins()); }
-    public Optional<Incident> incident() { return store.load(log); }
+
+    private final Plugin plugin;
+    private final Logger logger;
+    private final IncidentStore store;
+    private final WebhookClient webhook;
+    private final AtomicBoolean handling = new AtomicBoolean();
+
+    private volatile Settings currentSettings;
+    private BukkitTask restartTask;
+
+    public GuardianService(
+            Plugin plugin,
+            Settings settings,
+            IncidentStore store,
+            WebhookClient webhook) {
+
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
+        this.logger = plugin.getLogger();
+        this.currentSettings = Objects.requireNonNull(settings, "settings");
+        this.store = Objects.requireNonNull(store, "store");
+        this.webhook = Objects.requireNonNull(webhook, "webhook");
+    }
+
+    public void updateSettings(Settings updatedSettings) {
+        currentSettings = Objects.requireNonNull(updatedSettings, "updatedSettings");
+    }
+
+    public Settings settings() {
+        return currentSettings;
+    }
+
+    public List<PluginHealth> health() {
+        return PluginHealth.inspect(
+                Bukkit.getPluginManager(),
+                currentSettings.requiredPlugins());
+    }
+
+    public Optional<Incident> incident() {
+        return store.load(logger);
+    }
+
     public boolean allowsCriticalBypass(Player player) {
-        if (!Bukkit.hasWhitelist() || store.load(log).isEmpty()) return false;
-        Settings.Bypass bypass = settings.bypass();
-        if (bypass.playerUuids().contains(player.getUniqueId())) return true;
-        if (player.isOp() && !bypass.allowOps()) return false;
-        return bypass.allowOps() && player.isOp() || (!bypass.permission().isBlank() && player.hasPermission(bypass.permission()));
+        Objects.requireNonNull(player, "player");
+        if (!Bukkit.hasWhitelist() || !store.hasActiveIncident(logger)) {
+            return false;
+        }
+
+        Settings.Bypass bypass = currentSettings.bypass();
+        boolean hasPermission = !bypass.permission().isBlank()
+                && player.hasPermission(bypass.permission());
+
+        return hasCriticalBypass(
+                player.getUniqueId(),
+                player.isOp(),
+                hasPermission,
+                bypass);
     }
-    public void startupCheck() { check(true, null); }
-    public void manualCheck(boolean enforce, CommandSender sender) { check(enforce, sender); }
-    private void check(boolean enforce, CommandSender sender) {
-        List<PluginHealth> health = health(); List<PluginHealth> failed = health.stream().filter(h -> !h.healthy()).toList();
-        if (failed.isEmpty()) { recoverIfNeeded(); if (sender != null) sender.sendMessage(ChatColor.GOLD + "StartupGuardian " + ChatColor.DARK_GRAY + "» " + ChatColor.GREEN + "All " + health.size() + " required plugins are enabled."); else log.info("[StartupGuardian] All " + health.size() + " required plugins are enabled."); return; }
-        if (sender != null && !enforce) { sender.sendMessage(ChatColor.GOLD + "StartupGuardian " + ChatColor.DARK_GRAY + "» " + ChatColor.RED + "Failed plugins: " + ChatColor.WHITE + describe(failed) + ChatColor.GRAY + " • Use " + ChatColor.YELLOW + "--enforce" + ChatColor.GRAY + " to enter protection mode."); return; }
-        handleFailure(health);
+
+    static boolean hasCriticalBypass(
+            UUID playerUuid,
+            boolean operator,
+            boolean hasPermission,
+            Settings.Bypass bypass) {
+
+        Objects.requireNonNull(playerUuid, "playerUuid");
+        Objects.requireNonNull(bypass, "bypass");
+
+        return bypass.playerUuids().contains(playerUuid)
+                || hasPermission
+                || (bypass.allowOps() && operator);
     }
-    private void handleFailure(List<PluginHealth> health) {
-        if (!failureProcessed.compareAndSet(false, true) || !handling.compareAndSet(false, true)) return;
+
+    public void startupCheck() {
+        check(true, null);
+    }
+
+    public void manualCheck(boolean enforce, CommandSender sender) {
+        check(enforce, Objects.requireNonNull(sender, "sender"));
+    }
+
+    public boolean reset() {
+        cancelScheduledRestart();
         try {
-            Optional<Incident> existing = store.load(log); boolean previous = Bukkit.hasWhitelist(); boolean enabledByUs = settings.protection().whitelist() && !previous;
-            Incident incident = existing.map(i -> i.observed(health)).orElseGet(() -> Incident.create(health, previous, enabledByUs));
-            if (settings.protection().whitelist()) { Bukkit.setWhitelist(true); if (settings.protection().kickPlayers()) kickPlayers(); }
-            boolean restart = incident.automaticRestartArmed() && (!settings.loop().enabled() || incident.automaticRestartAttempts() < settings.loop().maximumRestarts());
-            if (restart) incident = incident.withRestartScheduled(); else if (settings.loop().enabled()) incident = incident.stopLoop();
-            if (store.corrupted()) { incident = incident.stopLoop(); restart = false; }
-            if (!save(incident)) { incident = incident.stopLoop(); restart = false; }
-            logFailure(incident, restart, Bukkit.hasWhitelist()); webhook.incident(settings, incident, restart, Bukkit.hasWhitelist());
-            if (restart) { Incident finalIncident = incident; Bukkit.getScheduler().runTaskLater(plugin, () -> dispatchRestart(finalIncident), settings.protection().restartDelaySeconds() * 20L); }
-        } finally { handling.set(false); }
+            store.clear();
+            return true;
+        } catch (IOException exception) {
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Could not reset incident.",
+                    exception);
+            return false;
+        }
     }
-    private void kickPlayers() { for (Player p : Bukkit.getOnlinePlayers()) if (settings.protection().kickOps() || !p.isOp()) p.kick(MiniMessage.miniMessage().deserialize(settings.protection().kickMessage())); }
-    private void dispatchRestart(Incident incident) { boolean done = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), settings.protection().restartCommand()); if (!done) { log.warning("[StartupGuardian] Restart command was not dispatched; using fallback command."); Bukkit.dispatchCommand(Bukkit.getConsoleSender(), settings.protection().fallbackCommand()); } }
-    private void recoverIfNeeded() { Optional<Incident> active = store.load(log); if (active.isEmpty()) return; Incident i = active.get(); webhook.recovery(settings, i); if (settings.protection().restoreWhitelist() && i.guardianEnabledWhitelist()) Bukkit.setWhitelist(i.previousWhitelistEnabled()); try { store.clear(); } catch (IOException ex) { log.severe("[StartupGuardian] Could not clear recovered incident marker: " + ex.getMessage()); return; } log.warning("[StartupGuardian] Recovery detected for incident " + i.incidentId() + ". Incident marker cleared."); }
-    public boolean reset() { try { store.clear(); failureProcessed.set(false); return true; } catch (IOException ex) { log.severe("[StartupGuardian] Could not reset incident: " + ex.getMessage()); return false; } }
-    public void webhookTest() { webhook.test(settings); }
-    private boolean save(Incident i) { try { store.save(i); return true; } catch (IOException ex) { log.severe("[StartupGuardian] Could not save incident marker; automatic restart suppressed for safety: " + ex.getMessage()); return false; } }
-    private void logFailure(Incident i, boolean restart, boolean whitelist) { log.severe("\n========== STARTUPGUARDIAN CRITICAL FAILURE =========="); i.failures().forEach(f -> log.severe("Required plugin " + f.configuredName() + ": " + f.status() + (f.detectedName() == null ? "" : " (detected as " + f.detectedName() + ")"))); log.severe("Incident: " + i.incidentId() + " | restart attempts: " + i.automaticRestartAttempts() + " | restart scheduled: " + restart); log.severe("Whitelist enabled: " + whitelist + " | marker: " + store.path()); if (i.restartLoopStopped()) log.severe("AUTOMATIC RESTARTS STOPPED: manual intervention is required."); log.severe("======================================================="); }
-    private String describe(List<PluginHealth> failed) { return String.join(", ", failed.stream().map(h -> h.configuredName() + " (" + h.state().name().toLowerCase() + ")").toList()); }
+
+    public void webhookTest() {
+        webhook.test(currentSettings);
+    }
+
+    public void close() {
+        cancelScheduledRestart();
+    }
+
+    private void check(boolean enforce, CommandSender sender) {
+        List<PluginHealth> pluginHealth = health();
+        List<PluginHealth> failedPlugins = pluginHealth.stream()
+                .filter(health -> !health.healthy())
+                .toList();
+
+        if (failedPlugins.isEmpty()) {
+            recoverIfNeeded();
+            reportHealthy(sender, pluginHealth.size());
+            return;
+        }
+
+        if (sender != null && !enforce) {
+            sender.sendMessage(
+                    prefix()
+                            + ChatColor.RED
+                            + "Failed plugins: "
+                            + ChatColor.WHITE
+                            + describe(failedPlugins)
+                            + ChatColor.GRAY
+                            + " • Use "
+                            + ChatColor.YELLOW
+                            + "--enforce"
+                            + ChatColor.GRAY
+                            + " to enter protection mode.");
+            return;
+        }
+
+        // Every explicit enforcement is processed. RestartPolicy prevents duplicate
+        // pending restarts and enforces the persisted automatic restart cap.
+        handleFailure(pluginHealth);
+    }
+
+    private void handleFailure(List<PluginHealth> pluginHealth) {
+        if (!handling.compareAndSet(false, true)) {
+            return;
+        }
+
+        try {
+            Optional<Incident> existingIncident = store.load(logger);
+            boolean previousWhitelist = Bukkit.hasWhitelist();
+            boolean enabledWhitelist = currentSettings.protection().whitelist()
+                    && !previousWhitelist;
+
+            Incident incident = existingIncident
+                    .map(value -> value.observed(pluginHealth))
+                    .orElseGet(() -> Incident.create(
+                            pluginHealth,
+                            previousWhitelist,
+                            enabledWhitelist));
+
+            applyProtection();
+
+            RestartPolicy.Decision decision = RestartPolicy.evaluate(
+                    incident,
+                    currentSettings.loop(),
+                    hasScheduledRestart(),
+                    store.corrupted());
+            incident = decision.incident();
+
+            boolean restartScheduled = decision.scheduleRestart();
+            if (!save(incident)) {
+                incident = incident.stopLoop();
+                restartScheduled = false;
+            }
+
+            logFailure(incident, restartScheduled, Bukkit.hasWhitelist());
+            webhook.incident(
+                    currentSettings,
+                    incident,
+                    restartScheduled,
+                    Bukkit.hasWhitelist());
+
+            if (restartScheduled) {
+                scheduleRestart();
+            }
+        } finally {
+            handling.set(false);
+        }
+    }
+
+    private void applyProtection() {
+        if (!currentSettings.protection().whitelist()) {
+            return;
+        }
+
+        Bukkit.setWhitelist(true);
+        if (currentSettings.protection().kickPlayers()) {
+            kickPlayers();
+        }
+    }
+
+    private void kickPlayers() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (currentSettings.protection().kickOps() || !player.isOp()) {
+                player.kick(MiniMessage.miniMessage().deserialize(
+                        currentSettings.protection().kickMessage()));
+            }
+        }
+    }
+
+    private void scheduleRestart() {
+        long delayTicks = currentSettings.protection().restartDelaySeconds() * 20L;
+        restartTask = Bukkit.getScheduler().runTaskLater(
+                plugin,
+                this::dispatchRestart,
+                delayTicks);
+    }
+
+    private void dispatchRestart() {
+        restartTask = null;
+        boolean dispatched = Bukkit.dispatchCommand(
+                Bukkit.getConsoleSender(),
+                currentSettings.protection().restartCommand());
+
+        if (!dispatched) {
+            logger.warning(
+                    "[StartupGuardian] Restart command was not dispatched; "
+                            + "using fallback command.");
+            Bukkit.dispatchCommand(
+                    Bukkit.getConsoleSender(),
+                    currentSettings.protection().fallbackCommand());
+        }
+    }
+
+    private boolean hasScheduledRestart() {
+        return restartTask != null && !restartTask.isCancelled();
+    }
+
+    private void cancelScheduledRestart() {
+        if (restartTask != null) {
+            restartTask.cancel();
+            restartTask = null;
+        }
+    }
+
+    private void recoverIfNeeded() {
+        Optional<Incident> activeIncident = store.load(logger);
+        if (activeIncident.isEmpty()) {
+            return;
+        }
+
+        Incident incident = activeIncident.orElseThrow();
+        try {
+            store.clear();
+        } catch (IOException exception) {
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Could not clear recovered incident marker.",
+                    exception);
+            return;
+        }
+
+        cancelScheduledRestart();
+        if (currentSettings.protection().restoreWhitelist()
+                && incident.guardianEnabledWhitelist()) {
+            Bukkit.setWhitelist(incident.previousWhitelistEnabled());
+        }
+
+        webhook.recovery(currentSettings, incident);
+        logger.log(
+                Level.WARNING,
+                "[StartupGuardian] Recovery detected for incident {0}. "
+                        + "Incident marker cleared.",
+                incident.incidentId());
+    }
+
+    private boolean save(Incident incident) {
+        try {
+            store.save(incident);
+            return true;
+        } catch (IOException exception) {
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Could not save incident marker; "
+                            + "automatic restart suppressed for safety.",
+                    exception);
+            return false;
+        }
+    }
+
+    private void reportHealthy(CommandSender sender, int requiredPluginCount) {
+        String message = "[StartupGuardian] All "
+                + requiredPluginCount
+                + " required plugins are enabled.";
+
+        if (sender == null) {
+            logger.info(message);
+            return;
+        }
+
+        sender.sendMessage(
+                prefix()
+                        + ChatColor.GREEN
+                        + "All "
+                        + requiredPluginCount
+                        + " required plugins are enabled.");
+    }
+
+    private void logFailure(
+            Incident incident,
+            boolean restartScheduled,
+            boolean whitelistEnabled) {
+
+        logger.severe(
+                "\n========== STARTUPGUARDIAN CRITICAL FAILURE ==========");
+        for (Incident.Failure failure : incident.failures()) {
+            String detectedName = failure.detectedName() == null
+                    ? ""
+                    : " (detected as " + failure.detectedName() + ")";
+            logger.severe(
+                    "Required plugin "
+                            + failure.configuredName()
+                            + ": "
+                            + failure.status()
+                            + detectedName);
+        }
+
+        logger.severe(
+                "Incident: "
+                        + incident.incidentId()
+                        + " | restart attempts: "
+                        + incident.automaticRestartAttempts()
+                        + " | restart scheduled: "
+                        + restartScheduled);
+        logger.severe(
+                "Whitelist enabled: "
+                        + whitelistEnabled
+                        + " | marker: "
+                        + store.path());
+
+        if (incident.restartLoopStopped()) {
+            logger.severe(
+                    "AUTOMATIC RESTARTS STOPPED: manual intervention is required.");
+        }
+        logger.severe(
+                "=======================================================");
+    }
+
+    private String describe(List<PluginHealth> failedPlugins) {
+        return String.join(
+                ", ",
+                failedPlugins.stream()
+                        .map(health -> health.configuredName()
+                                + " ("
+                                + health.state().name().toLowerCase(Locale.ROOT)
+                                + ")")
+                        .toList());
+    }
+
+    private static String prefix() {
+        return ChatColor.GOLD
+                + "StartupGuardian "
+                + ChatColor.DARK_GRAY
+                + "» "
+                + ChatColor.RESET;
+    }
 }

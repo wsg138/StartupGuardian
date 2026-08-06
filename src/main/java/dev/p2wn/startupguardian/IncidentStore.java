@@ -1,24 +1,163 @@
 package dev.p2wn.startupguardian;
 
-import com.google.gson.*;
-import java.io.*;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonDeserializer;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.JsonSerializer;
+import java.io.IOException;
+import java.io.Reader;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public final class IncidentStore {
-    private final Path file; private volatile boolean corrupted;
-    private final Gson gson = new GsonBuilder().registerTypeAdapter(Instant.class, new JsonSerializer<Instant>() { public JsonElement serialize(Instant x, Type t, JsonSerializationContext c) { return new JsonPrimitive(x.toString()); }}).registerTypeAdapter(Instant.class, new JsonDeserializer<Instant>() { public Instant deserialize(JsonElement x, Type t, JsonDeserializationContext c) { return Instant.parse(x.getAsString()); }}).setPrettyPrinting().create();
-    public IncidentStore(Path dataFolder) { file = dataFolder.resolve("active-incident.json"); }
-    public Path path() { return file; }
-    public Optional<Incident> load(java.util.logging.Logger log) {
-        if (!Files.exists(file)) return Optional.empty();
-        try (Reader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) { return Optional.ofNullable(gson.fromJson(r, Incident.class)); }
-        catch (Exception ex) { corrupted = true; try { Files.move(file, file.resolveSibling("active-incident.corrupt-" + System.currentTimeMillis() + ".json"), StandardCopyOption.REPLACE_EXISTING); } catch (IOException ignored) {} log.severe("[StartupGuardian] Incident marker was malformed and was backed up; no automatic restart will be armed until an incident is reset or a healthy startup occurs."); return Optional.empty(); }
+
+    private static final String ACTIVE_INCIDENT_FILE = "active-incident.json";
+
+    private final Path file;
+    private final Gson gson;
+
+    private Optional<Incident> cachedIncident = Optional.empty();
+    private boolean loaded;
+    private boolean corruptionDetected;
+
+    public IncidentStore(Path dataFolder) {
+        file = Objects.requireNonNull(dataFolder, "dataFolder")
+                .resolve(ACTIVE_INCIDENT_FILE);
+        gson = createGson();
     }
-    public void save(Incident incident) throws IOException { Files.createDirectories(file.getParent()); Path temp = file.resolveSibling(file.getFileName() + ".tmp"); Files.writeString(temp, gson.toJson(incident), StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING); try { Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); } catch (AtomicMoveNotSupportedException ex) { Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING); } }
-    public void clear() throws IOException { Files.deleteIfExists(file); corrupted = false; }
-    public boolean corrupted() { return corrupted; }
+
+    public Path path() {
+        return file;
+    }
+
+    @SuppressWarnings("PMD.AvoidCatchingGenericException")
+    public synchronized Optional<Incident> load(Logger logger) {
+        Objects.requireNonNull(logger, "logger");
+        if (loaded) {
+            return cachedIncident;
+        }
+
+        loaded = true;
+        if (!Files.exists(file)) {
+            return cachedIncident;
+        }
+
+        try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            Incident incident = gson.fromJson(reader, Incident.class);
+            if (incident == null) {
+                throw new IllegalStateException("Incident marker contained null");
+            }
+            cachedIncident = Optional.of(incident);
+        } catch (IOException | RuntimeException exception) {
+            corruptionDetected = true;
+            cachedIncident = Optional.empty();
+            quarantineCorruptFile(logger, exception);
+        }
+
+        return cachedIncident;
+    }
+
+    public synchronized boolean hasActiveIncident(Logger logger) {
+        return load(logger).isPresent();
+    }
+
+    public synchronized void save(Incident incident) throws IOException {
+        Objects.requireNonNull(incident, "incident");
+        Files.createDirectories(file.getParent());
+
+        Path temporaryFile = file.resolveSibling(file.getFileName() + ".tmp");
+        try {
+            Files.writeString(
+                    temporaryFile,
+                    gson.toJson(incident),
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING);
+            replaceAtomically(temporaryFile);
+            cachedIncident = Optional.of(incident);
+            loaded = true;
+        } finally {
+            Files.deleteIfExists(temporaryFile);
+        }
+    }
+
+    public synchronized void clear() throws IOException {
+        Files.deleteIfExists(file);
+        cachedIncident = Optional.empty();
+        loaded = true;
+        corruptionDetected = false;
+    }
+
+    public synchronized boolean corrupted() {
+        return corruptionDetected;
+    }
+
+    private void replaceAtomically(Path temporaryFile) throws IOException {
+        try {
+            Files.move(
+                    temporaryFile,
+                    file,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(
+                    temporaryFile,
+                    file,
+                    StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void quarantineCorruptFile(Logger logger, Exception cause) {
+        Path backup = file.resolveSibling(
+                "active-incident.corrupt-" + System.currentTimeMillis() + ".json");
+
+        try {
+            Files.move(
+                    file,
+                    backup,
+                    StandardCopyOption.REPLACE_EXISTING);
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Incident marker was invalid and was moved to {0}. "
+                            + "Automatic restart remains suppressed until reset or recovery.",
+                    backup);
+        } catch (IOException backupException) {
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Incident marker was invalid and could not be quarantined. "
+                            + "Automatic restart remains suppressed.",
+                    backupException);
+        }
+
+        logger.log(
+                Level.FINE,
+                "[StartupGuardian] Incident marker parse failure.",
+                cause);
+    }
+
+    private static Gson createGson() {
+        JsonSerializer<Instant> serializer =
+                (Instant source, Type type, com.google.gson.JsonSerializationContext context) ->
+                        new JsonPrimitive(source.toString());
+
+        JsonDeserializer<Instant> deserializer =
+                (element, type, context) -> Instant.parse(element.getAsString());
+
+        return new GsonBuilder()
+                .registerTypeAdapter(Instant.class, serializer)
+                .registerTypeAdapter(Instant.class, deserializer)
+                .setPrettyPrinting()
+                .create();
+    }
 }

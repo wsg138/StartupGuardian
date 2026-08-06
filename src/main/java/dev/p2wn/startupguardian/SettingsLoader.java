@@ -1,24 +1,163 @@
 package dev.p2wn.startupguardian;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 import org.bukkit.configuration.file.FileConfiguration;
-import java.util.*;
 
 public final class SettingsLoader {
-    private SettingsLoader() {}
-    public static Settings load(FileConfiguration c) {
-        List<String> plugins = c.getStringList("required-plugins").stream().map(String::trim).filter(s -> !s.isEmpty()).distinct().toList();
-        int grace = bounded(c.getInt("startup-check.grace-period-ticks", 20), 0, 20 * 60, 20);
-        Settings.Protection p = new Settings.Protection(c.getBoolean("protection.enable-whitelist", true), c.getBoolean("protection.kick-online-players", true), c.getBoolean("protection.emergency-kick-ops", false), text(c, "protection.kick-message", "The server entered emergency maintenance."), bounded(c.getInt("protection.restart-delay-seconds", 8), 0, 300, 8), command(c, "protection.restart-command", "restart"), command(c, "protection.fallback-command", "stop"), c.getBoolean("protection.restore-previous-whitelist-state-after-recovery", true));
-        Settings.Loop loop = new Settings.Loop(c.getBoolean("restart-loop-protection.enabled", true), bounded(c.getInt("restart-loop-protection.maximum-automatic-restarts", 1), 0, 10, 1), bounded(c.getInt("restart-loop-protection.attempt-window-minutes", 15), 1, 1440, 15));
-        List<String> roles = cleanIds(c.getStringList("discord.staff-mentions.role-ids"));
-        List<String> users = cleanIds(c.getStringList("discord.staff-mentions.user-ids"));
-        Settings.Discord d = new Settings.Discord(c.getBoolean("discord.enabled", true), text(c, "discord.webhook-url", ""), roles, users, bounded(c.getInt("discord.repeated-alerts", 3), 1, 10, 3), bounded(c.getInt("discord.delay-between-alerts-milliseconds", 1500), 0, 60000, 1500), text(c, "discord.username", "Startup Guardian"), text(c, "discord.avatar-url", ""));
-        Settings.Bypass bypass = new Settings.Bypass(cleanUuids(c.getStringList("critical-mode-bypass.player-uuids")), text(c, "critical-mode-bypass.permission", "startupguardian.bypass"), c.getBoolean("critical-mode-bypass.allow-ops", false));
-        return new Settings(plugins, grace, p, loop, d, bypass, new Settings.Messages(text(c, "messages.incident-title", "CRITICAL SERVER STARTUP FAILURE"), text(c, "messages.recovery-title", "Server startup recovered")));
+
+    private static final int DEFAULT_GRACE_TICKS = 20;
+    private static final int DEFAULT_RESTART_DELAY_SECONDS = 8;
+    private static final int DEFAULT_RESTARTS = 1;
+    private static final int DEFAULT_ALERT_REPEATS = 3;
+    private static final int DEFAULT_ALERT_DELAY_MILLIS = 1_500;
+
+    private SettingsLoader() {
     }
-    private static int bounded(int value, int min, int max, int fallback) { return value < min || value > max ? fallback : value; }
-    private static String text(FileConfiguration c, String path, String fallback) { String s = c.getString(path, fallback); return s == null ? fallback : s.trim(); }
-    private static String command(FileConfiguration c, String path, String fallback) { String s = text(c, path, fallback).replaceFirst("^/", ""); return s.isBlank() ? fallback : s; }
-    private static List<String> cleanIds(List<String> ids) { return ids.stream().map(String::trim).filter(s -> s.matches("[0-9]{5,30}")).distinct().toList(); }
-    private static List<java.util.UUID> cleanUuids(List<String> values) { return values.stream().map(String::trim).map(value -> { try { return java.util.UUID.fromString(value); } catch (IllegalArgumentException ignored) { return null; } }).filter(java.util.Objects::nonNull).distinct().toList(); }
+
+    public static Settings load(FileConfiguration config) {
+        Objects.requireNonNull(config, "config");
+
+        List<String> plugins = requiredPlugins(config.getStringList("required-plugins"));
+        int graceTicks = bounded(
+                config.getInt("startup-check.grace-period-ticks", DEFAULT_GRACE_TICKS),
+                0,
+                20 * 60,
+                DEFAULT_GRACE_TICKS);
+
+        Settings.Protection protection = new Settings.Protection(
+                config.getBoolean("protection.enable-whitelist", true),
+                config.getBoolean("protection.kick-online-players", true),
+                config.getBoolean("protection.emergency-kick-ops", false),
+                text(config, "protection.kick-message", "The server entered emergency maintenance."),
+                bounded(
+                        config.getInt(
+                                "protection.restart-delay-seconds",
+                                DEFAULT_RESTART_DELAY_SECONDS),
+                        0,
+                        300,
+                        DEFAULT_RESTART_DELAY_SECONDS),
+                command(config, "protection.restart-command", "restart"),
+                command(config, "protection.fallback-command", "stop"),
+                config.getBoolean(
+                        "protection.restore-previous-whitelist-state-after-recovery",
+                        true));
+
+        Settings.Loop loop = new Settings.Loop(
+                config.getBoolean("restart-loop-protection.enabled", true),
+                bounded(
+                        config.getInt(
+                                "restart-loop-protection.maximum-automatic-restarts",
+                                DEFAULT_RESTARTS),
+                        0,
+                        10,
+                        DEFAULT_RESTARTS));
+
+        Settings.Discord discord = new Settings.Discord(
+                config.getBoolean("discord.enabled", true),
+                text(config, "discord.webhook-url", ""),
+                cleanIds(config.getStringList("discord.staff-mentions.role-ids")),
+                cleanIds(config.getStringList("discord.staff-mentions.user-ids")),
+                bounded(
+                        config.getInt("discord.repeated-alerts", DEFAULT_ALERT_REPEATS),
+                        1,
+                        10,
+                        DEFAULT_ALERT_REPEATS),
+                bounded(
+                        config.getInt(
+                                "discord.delay-between-alerts-milliseconds",
+                                DEFAULT_ALERT_DELAY_MILLIS),
+                        0,
+                        60_000,
+                        DEFAULT_ALERT_DELAY_MILLIS),
+                text(config, "discord.username", "Startup Guardian"),
+                text(config, "discord.avatar-url", ""));
+
+        Settings.Bypass bypass = new Settings.Bypass(
+                cleanUuids(config.getStringList("critical-mode-bypass.player-uuids")),
+                text(config, "critical-mode-bypass.permission", "startupguardian.bypass"),
+                config.getBoolean("critical-mode-bypass.allow-ops", false));
+
+        Settings.Messages messages = new Settings.Messages(
+                text(config, "messages.incident-title", "CRITICAL SERVER STARTUP FAILURE"),
+                text(config, "messages.recovery-title", "Server startup recovered"));
+
+        return new Settings(
+                plugins,
+                graceTicks,
+                protection,
+                loop,
+                discord,
+                bypass,
+                messages);
+    }
+
+    private static List<String> requiredPlugins(List<String> configuredNames) {
+        Map<String, String> uniqueNames = new LinkedHashMap<>();
+        for (String configuredName : configuredNames) {
+            String name = configuredName.trim();
+            if (!name.isEmpty()) {
+                uniqueNames.putIfAbsent(name.toLowerCase(Locale.ROOT), name);
+            }
+        }
+
+        if (uniqueNames.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "required-plugins must contain at least one plugin name");
+        }
+        return List.copyOf(uniqueNames.values());
+    }
+
+    private static int bounded(int value, int minimum, int maximum, int fallback) {
+        if (value < minimum || value > maximum) {
+            return fallback;
+        }
+        return value;
+    }
+
+    private static String text(
+            FileConfiguration config,
+            String path,
+            String fallback) {
+
+        String value = config.getString(path, fallback);
+        return value == null ? fallback : value.trim();
+    }
+
+    private static String command(
+            FileConfiguration config,
+            String path,
+            String fallback) {
+
+        String value = text(config, path, fallback).replaceFirst("^/", "");
+        return value.isBlank() ? fallback : value;
+    }
+
+    private static List<String> cleanIds(List<String> ids) {
+        return ids.stream()
+                .map(String::trim)
+                .filter(value -> value.matches("[0-9]{5,30}"))
+                .distinct()
+                .toList();
+    }
+
+    private static List<UUID> cleanUuids(List<String> values) {
+        List<UUID> uuids = new ArrayList<>();
+        for (String value : values) {
+            try {
+                UUID uuid = UUID.fromString(value.trim());
+                if (!uuids.contains(uuid)) {
+                    uuids.add(uuid);
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Invalid configured UUIDs are discarded.
+            }
+        }
+        return List.copyOf(uuids);
+    }
 }

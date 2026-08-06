@@ -1,68 +1,96 @@
 # StartupGuardian
 
-StartupGuardian protects a Paper or Leaf server when configured critical plugins are missing or disabled after a full startup. It enables the whitelist, alerts Discord staff, and can request one controlled restart. If the same incident remains after that restart, it keeps the server in maintenance mode rather than looping restarts.
+StartupGuardian protects a Paper or Leaf server when configured critical plugins are missing or disabled after a full startup. It enables the whitelist, alerts Discord staff, and can request a controlled restart. Persisted incident state prevents a permanently broken dependency from causing an endless restart loop.
 
 ## Important limitation
 
-StartupGuardian cannot protect against **StartupGuardian itself** failing to load or enable. A server/panel-level watchdog is needed for that case.
+StartupGuardian cannot protect against **StartupGuardian itself** failing to load or enable. Use a server- or panel-level watchdog for that case.
 
 ## Installation
 
-1. Build with Java 21: `mvn clean package`.
+1. Build with Java 21 and Maven 3.9+: `mvn clean verify`.
 2. Copy `target/StartupGuardian.jar` to the server's `plugins` folder.
 3. Start once, then edit `plugins/StartupGuardian/config.yml`.
-4. Restart the server normally. The plugin runs its final check after `ServerLoadEvent` on full startup only; it intentionally does not enforce on `/reload`.
+4. Restart the server normally.
 
-Set `required-plugins` to exact plugin names (matching is case-insensitive). The default 20-tick grace period gives other plugins time to finish enabling.
+The final check runs after `ServerLoadEvent` on full startup only. It intentionally does not automatically enforce on `/reload`.
 
-## Discord setup
+Set `required-plugins` to plugin names reported by `/plugins` or declared in each dependency's `plugin.yml`. Matching is case-insensitive. Jar file names are not used. An empty required-plugin list is rejected instead of silently reporting a healthy server.
 
-Create a channel webhook in Discord and place its URL in `discord.webhook-url`. Put numeric Discord role and/or user IDs under `staff-mentions`. Webhook requests use explicit `allowed_mentions`, so only those listed users and roles may be pinged. The URL is never written to plugin logs. `/startupguardian testdiscord` tests delivery without changing the server.
+## Failure and restart behavior
 
-## Restart setup
+On a failed startup, StartupGuardian:
 
-The default command is `restart`, dispatched by the console after the configured delay. Your host or restart plugin must support that command. If dispatching it fails, StartupGuardian dispatches `stop`; configure the hosting panel or watchdog to bring the process back online after a stop. The plugin never calls `System.exit()`.
+1. records or updates `plugins/StartupGuardian/active-incident.json`;
+2. enables the whitelist when configured;
+3. optionally removes online players;
+4. sends the initial Discord incident alert and configured reminders;
+5. schedules an automatic restart only when the persisted restart limit permits it.
 
-## Incident and recovery behavior
+`restart-loop-protection.maximum-automatic-restarts` is a hard per-incident cap. It does not reset after a time window. The old `attempt-window-minutes` setting was removed because it never affected behavior and implied unsafe automatic re-arming.
 
-The persistent marker is `plugins/StartupGuardian/active-incident.json`. It records the incident ID, timestamps, failed plugin states, original whitelist state, and restart count. Writes use a temporary file followed by an atomic move where supported. A malformed marker is retained as a timestamped backup rather than discarded.
+A manual `/startupguardian check --enforce` always reprocesses the current failure and sends a fresh incident notification. It does not schedule a duplicate restart while one is already pending, and it cannot exceed the persisted automatic restart cap.
 
-With the defaults, the first failed startup schedules one restart. A second failed startup keeps the whitelist enabled and sends alerts but does not restart. Restarting is not automatically re-armed merely after the 15-minute attempt window; it requires a healthy startup or `/startupguardian reset confirm`. This avoids a continuing cycle from a permanently broken plugin.
+`/startupguardian reset confirm` clears the active incident and cancels any pending restart. It deliberately leaves the current whitelist state unchanged.
 
-On a healthy startup after an incident, the marker is cleared, a single recovery webhook is sent, and the prior whitelist state is restored only when this plugin enabled it for the incident. A whitelist that was already enabled is never disabled by recovery.
+## Incident persistence and recovery
+
+The active marker records:
+
+- incident ID;
+- first and latest detection timestamps;
+- failed plugin states;
+- original whitelist state;
+- whether StartupGuardian enabled the whitelist;
+- automatic restart count;
+- whether loop protection stopped further restarts.
+
+Writes use a temporary file and an atomic replacement where supported. Incident JSON is structurally validated when loaded. Malformed or incomplete markers are moved to a timestamped backup, and automatic restart is suppressed until reset or a healthy recovery.
+
+Incident state is cached after the first read. Login bypass checks therefore do not repeatedly read and parse the marker from disk.
+
+On a healthy check after an incident, the marker is cleared, a recovery webhook is sent, a pending restart is cancelled, and the previous whitelist state is restored only when StartupGuardian enabled it for that incident.
 
 ## Critical-mode access bypass
 
-By default, no player bypasses emergency whitelist restrictions. Add trusted player UUIDs to `critical-mode-bypass.player-uuids`, or grant the configured `startupguardian.bypass` permission through a permissions plugin. These bypasses work only while an active StartupGuardian incident exists and whitelist mode is enabled. Operators do not bypass automatically; set `critical-mode-bypass.allow-ops: true` only if every operator should be permitted to join in critical mode.
+By default, no player bypasses emergency whitelist restrictions. You can allow access with:
+
+- a UUID in `critical-mode-bypass.player-uuids`;
+- the configured permission, normally `startupguardian.bypass`;
+- operator status when `critical-mode-bypass.allow-ops` is enabled.
+
+Explicit UUID and permission bypasses work for operators even when automatic operator bypass is disabled.
+
+## Discord setup
+
+Create a Discord channel webhook and place its URL in `discord.webhook-url`. Numeric role and user IDs may be listed under `staff-mentions`. The payload uses explicit `allowed_mentions`, so only configured IDs may be pinged. The webhook URL is never written to logs.
+
+Repeated alerts are scheduled without blocking the HTTP executor. Their delays are absolute multiples of `delay-between-alerts-milliseconds`, so a 1.5-second delay produces alerts at approximately 0, 1.5, and 3 seconds.
+
+Discord content is capped at the platform's 2,000-character limit. Network and HTTP failures are logged without interrupting whitelist or restart protection.
 
 ## Commands
 
 All commands require `startupguardian.admin`; console is always permitted.
 
-- `/startupguardian status` — health, incident, whitelist, restart, and webhook status.
-- `/startupguardian check` — report health only.
-- `/startupguardian check --enforce` — apply emergency handling when unhealthy.
-- `/startupguardian reload` — reload and validate configuration without clearing an incident.
-- `/startupguardian reset confirm` — clear the marker and re-arm restarts; does not change whitelist state.
+- `/startupguardian status` — show dependency, incident, restart, whitelist, and webhook status.
+- `/startupguardian check` — inspect dependency health without enforcing.
+- `/startupguardian check --enforce` — apply protection and send a fresh incident alert.
+- `/startupguardian reload` — validate and apply configuration; invalid reloads keep the previous settings.
+- `/startupguardian reset confirm` — clear the incident and cancel a pending restart.
 - `/startupguardian testdiscord` — send a harmless webhook test.
 
-## Example output and payload
+## Development and validation
 
-```text
-[StartupGuardian] All 2 required plugins are enabled.
-========== STARTUPGUARDIAN CRITICAL FAILURE ==========
-Required plugin WorldGuard: disabled (detected as WorldGuard)
-Incident: 8b2... | restart attempts: 1 | restart scheduled: true
-Whitelist enabled: true | marker: plugins/StartupGuardian/active-incident.json
-```
+`mvn clean verify` runs:
 
-```json
-{
-  "content": "<@&123456> **CRITICAL SERVER STARTUP FAILURE**\nIncident: `8b2...`\nFailures: `WorldGuard` (disabled)\nAutomatic restart attempts: 1\nWhitelist enabled: true\nRestart scheduled: true",
-  "allowed_mentions": {"roles": ["123456"], "users": [], "parse": []}
-}
-```
+- unit tests;
+- Checkstyle;
+- PMD and duplicate-code detection;
+- SpotBugs;
+- JaCoCo XML and HTML coverage generation;
+- shaded plugin packaging.
 
-## Validation
+GitHub Actions runs the same verification on every pull request and push to `main`, then uploads the plugin jar and JaCoCo report as workflow artifacts.
 
-The project includes unit tests for configuration bounds, incident serialization/corruption handling, persisted restart counts, and loop stopping. Bukkit operations run on the server thread; webhook HTTP uses a dedicated asynchronous executor with connection and request timeouts. Webhook errors are logged without interrupting whitelist or restart protection.
+Codacy supports repository configuration files for Checkstyle, PMD, and SpotBugs. Activate the repository configuration-file option for those tools in Codacy so `checkstyle.xml`, `ruleset.xml`, and any future SpotBugs configuration are used. To publish coverage to Codacy, add a `CODACY_PROJECT_TOKEN` repository secret and a coverage-reporter step that uploads `target/site/jacoco/jacoco.xml`.

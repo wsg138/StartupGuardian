@@ -1,4 +1,9 @@
 target/
 *.log
 *.jar
-!/.mvn/wrapper/maven-wrapper.jar
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/

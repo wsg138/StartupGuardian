@@ -1,9 +1,10 @@
 name: StartupGuardian
-version: 1.0.0
+version: 1.1.0
 main: dev.p2wn.startupguardian.StartupGuardianPlugin
-api-version: '1.21'
+api-version: "1.21"
 load: STARTUP
 author: P2wn
+description: Protects the server when required plugins fail during startup.
 commands:
   startupguardian:
     description: Manage StartupGuardian
