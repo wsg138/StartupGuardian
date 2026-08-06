@@ -17,6 +17,6 @@ interface IncidentRepository {
     Path path();
 
     default boolean hasActiveIncident() {
-        return load().isPresent();
+        return load().isPresent() || corrupted();
     }
 }

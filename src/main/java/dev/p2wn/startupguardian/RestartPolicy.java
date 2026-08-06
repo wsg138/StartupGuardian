@@ -27,7 +27,7 @@ final class RestartPolicy {
             return new Decision(incident.stopLoop(), false);
         }
 
-        return new Decision(incident.withRestartScheduled(), true);
+        return new Decision(incident, true);
     }
 
     record Decision(Incident incident, boolean scheduleRestart) {

@@ -2,6 +2,7 @@ package dev.p2wn.startupguardian;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -16,31 +17,36 @@ class RestartPolicyTest {
                     PluginHealth.State.DISABLED));
 
     @Test
-    void schedulesUntilConfiguredMaximum() {
-        Incident incident = Incident.create(failed, false, true);
+    void schedulingDecisionDoesNotConsumeAttemptBeforeSchedulerSucceeds() {
+        Incident incident = Incident.create(failed, false, false);
         Settings.Loop loop = new Settings.Loop(true, 2);
 
-        RestartPolicy.Decision first = RestartPolicy.evaluate(
+        RestartPolicy.Decision decision = RestartPolicy.evaluate(
                 incident,
                 loop,
                 false,
                 false);
-        RestartPolicy.Decision second = RestartPolicy.evaluate(
-                first.incident(),
-                loop,
-                false,
-                false);
-        RestartPolicy.Decision third = RestartPolicy.evaluate(
-                second.incident(),
-                loop,
+
+        assertTrue(decision.scheduleRestart());
+        assertSame(incident, decision.incident());
+        assertEquals(0, decision.incident().automaticRestartAttempts());
+    }
+
+    @Test
+    void stopsAfterPersistedAttemptsReachConfiguredMaximum() {
+        Incident incident = Incident.create(failed, false, true)
+                .withRestartScheduled()
+                .withRestartScheduled();
+
+        RestartPolicy.Decision decision = RestartPolicy.evaluate(
+                incident,
+                new Settings.Loop(true, 2),
                 false,
                 false);
 
-        assertTrue(first.scheduleRestart());
-        assertTrue(second.scheduleRestart());
-        assertFalse(third.scheduleRestart());
-        assertEquals(2, third.incident().automaticRestartAttempts());
-        assertTrue(third.incident().restartLoopStopped());
+        assertFalse(decision.scheduleRestart());
+        assertEquals(2, decision.incident().automaticRestartAttempts());
+        assertTrue(decision.incident().restartLoopStopped());
     }
 
     @Test
@@ -61,7 +67,7 @@ class RestartPolicyTest {
 
     @Test
     void corruptedPersistenceAlwaysSuppressesRestart() {
-        Incident incident = Incident.create(failed, false, true);
+        Incident incident = Incident.create(failed, false, false);
 
         RestartPolicy.Decision decision = RestartPolicy.evaluate(
                 incident,

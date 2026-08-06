@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.logging.Logger;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 
 class GuardianServiceTestSupport {
 
@@ -22,19 +23,32 @@ class GuardianServiceTestSupport {
         return (CommandSender) Proxy.newProxyInstance(
                 CommandSender.class.getClassLoader(),
                 new Class<?>[] {CommandSender.class},
-                (proxy, method, arguments) -> {
-                    Class<?> returnType = method.getReturnType();
-                    if (returnType == boolean.class) {
-                        return false;
-                    }
-                    if (returnType == int.class) {
-                        return 0;
-                    }
-                    if (returnType == long.class) {
-                        return 0L;
-                    }
-                    return null;
+                (proxy, method, arguments) -> defaultValue(method.getReturnType()));
+    }
+
+    static Player player(UUID uuid, boolean operator, boolean permission) {
+        return (Player) Proxy.newProxyInstance(
+                Player.class.getClassLoader(),
+                new Class<?>[] {Player.class},
+                (proxy, method, arguments) -> switch (method.getName()) {
+                    case "getUniqueId" -> uuid;
+                    case "isOp" -> operator;
+                    case "hasPermission" -> permission;
+                    default -> defaultValue(method.getReturnType());
                 });
+    }
+
+    private static Object defaultValue(Class<?> returnType) {
+        if (returnType == boolean.class) {
+            return false;
+        }
+        if (returnType == int.class) {
+            return 0;
+        }
+        if (returnType == long.class) {
+            return 0L;
+        }
+        return null;
     }
 
     static GuardianService service(
@@ -51,6 +65,20 @@ class GuardianServiceTestSupport {
     }
 
     static Settings settings(boolean kickPlayers, boolean kickOperators) {
+        return settings(
+                kickPlayers,
+                kickOperators,
+                new Settings.Bypass(
+                        List.<UUID>of(),
+                        "startupguardian.bypass",
+                        false));
+    }
+
+    static Settings settings(
+            boolean kickPlayers,
+            boolean kickOperators,
+            Settings.Bypass bypass) {
+
         return new Settings(
                 List.of("WorldGuard"),
                 20,
@@ -73,7 +101,7 @@ class GuardianServiceTestSupport {
                         0,
                         "Startup Guardian",
                         ""),
-                new Settings.Bypass(List.<UUID>of(), "startupguardian.bypass", false),
+                bypass,
                 new Settings.Messages("Incident", "Recovery"));
     }
 
@@ -83,6 +111,7 @@ class GuardianServiceTestSupport {
         Optional<Incident> incident = Optional.empty();
         boolean saveFails;
         boolean clearFails;
+        boolean corrupted;
 
         FakeRepository(List<String> sequence) {
             this.sequence = sequence;
@@ -100,6 +129,7 @@ class GuardianServiceTestSupport {
                 throw new IOException("forced save failure");
             }
             incident = Optional.of(value);
+            corrupted = false;
         }
 
         @Override
@@ -109,11 +139,12 @@ class GuardianServiceTestSupport {
                 throw new IOException("forced clear failure");
             }
             incident = Optional.empty();
+            corrupted = false;
         }
 
         @Override
         public boolean corrupted() {
-            return false;
+            return corrupted;
         }
 
         @Override
@@ -128,6 +159,7 @@ class GuardianServiceTestSupport {
         int incidents;
         int persistenceFailures;
         int recoveries;
+        boolean lastRestartScheduled;
 
         FakeNotifier(List<String> sequence) {
             this.sequence = sequence;
@@ -141,6 +173,7 @@ class GuardianServiceTestSupport {
                 boolean whitelisted) {
 
             incidents++;
+            lastRestartScheduled = restartScheduled;
             sequence.add("alert");
         }
 
@@ -170,7 +203,9 @@ class GuardianServiceTestSupport {
         List<PluginHealth> health;
         boolean whitelist;
         boolean primaryDispatchResult = true;
+        boolean fallbackDispatchResult = true;
         boolean protectionFails;
+        boolean scheduleFails;
         int whitelistChanges;
         int scheduleCalls;
         FakeRestartTask lastTask;
@@ -211,6 +246,9 @@ class GuardianServiceTestSupport {
         public RestartTask scheduleRestart(long delayTicks, Runnable action) {
             sequence.add("schedule");
             scheduleCalls++;
+            if (scheduleFails) {
+                throw new IllegalStateException("forced schedule failure");
+            }
             lastTask = new FakeRestartTask(action, sequence);
             return lastTask;
         }
@@ -218,7 +256,13 @@ class GuardianServiceTestSupport {
         @Override
         public boolean dispatchCommand(String command) {
             commands.add(command);
-            return !"restart".equals(command) || primaryDispatchResult;
+            if ("restart".equals(command)) {
+                return primaryDispatchResult;
+            }
+            if ("stop".equals(command)) {
+                return fallbackDispatchResult;
+            }
+            return true;
         }
     }
 
@@ -250,6 +294,7 @@ class GuardianServiceTestSupport {
         final Runnable action;
         final List<String> sequence;
         boolean cancelled;
+        boolean cancelFails;
 
         FakeRestartTask(Runnable action, List<String> sequence) {
             this.action = action;
@@ -263,8 +308,11 @@ class GuardianServiceTestSupport {
 
         @Override
         public void cancel() {
-            cancelled = true;
             sequence.add("cancel");
+            if (cancelFails) {
+                throw new IllegalStateException("forced cancellation failure");
+            }
+            cancelled = true;
         }
 
         void run() {

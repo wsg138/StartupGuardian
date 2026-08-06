@@ -73,6 +73,21 @@ public record Incident(
                 restartLoopStopped);
     }
 
+    public Incident withGuardianEnabledWhitelist() {
+        if (guardianEnabledWhitelist) {
+            return this;
+        }
+        return new Incident(
+                incidentId,
+                firstDetection,
+                lastDetection,
+                failures,
+                previousWhitelistEnabled,
+                true,
+                automaticRestartAttempts,
+                restartLoopStopped);
+    }
+
     public Incident withRestartScheduled() {
         return new Incident(
                 incidentId,
