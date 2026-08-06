@@ -14,9 +14,3 @@ interface GuardianNotifier {
 
     WebhookTestResult test(Settings settings);
 }
-
-enum WebhookTestResult {
-    QUEUED,
-    NOT_CONFIGURED,
-    CLOSED
-}
