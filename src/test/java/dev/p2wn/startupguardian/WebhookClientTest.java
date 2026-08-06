@@ -8,10 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.IOException;
+import java.text.MessageFormat;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.text.MessageFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -43,37 +43,40 @@ class WebhookClientTest {
     @Test
     void webhookNotConfiguredReturnsActualResult() {
         FakeTasks tasks = new FakeTasks();
-        WebhookClient client = new WebhookClient(
+        try (WebhookClient client = new WebhookClient(
                 logger(),
                 tasks,
-                new FakeTransport());
+                new FakeTransport())) {
 
-        assertEquals(WebhookTestResult.NOT_CONFIGURED, client.test(settings(false, 1)));
-        assertTrue(tasks.immediate.isEmpty());
+            assertEquals(WebhookTestResult.NOT_CONFIGURED, client.test(settings(false, 1)));
+            assertTrue(tasks.immediate.isEmpty());
+        }
     }
 
     @Test
     void closedWebhookClientReturnsActualResult() {
         FakeTasks tasks = new FakeTasks();
-        WebhookClient client = new WebhookClient(
+        try (WebhookClient client = new WebhookClient(
                 logger(),
                 tasks,
-                new FakeTransport());
-        client.close();
+                new FakeTransport())) {
 
-        assertEquals(WebhookTestResult.CLOSED, client.test(settings(true, 1)));
+            client.close();
+            assertEquals(WebhookTestResult.CLOSED, client.test(settings(true, 1)));
+        }
     }
 
     @Test
     void configuredWebhookQueuesTestOffThread() {
         FakeTasks tasks = new FakeTasks();
-        WebhookClient client = new WebhookClient(
+        try (WebhookClient client = new WebhookClient(
                 logger(),
                 tasks,
-                new FakeTransport());
+                new FakeTransport())) {
 
-        assertEquals(WebhookTestResult.QUEUED, client.test(settings(true, 1)));
-        assertEquals(1, tasks.immediate.size());
+            assertEquals(WebhookTestResult.QUEUED, client.test(settings(true, 1)));
+            assertEquals(1, tasks.immediate.size());
+        }
     }
 
     @Test
@@ -82,13 +85,13 @@ class WebhookClientTest {
         Logger logger = logger(handler);
         FakeTasks tasks = new FakeTasks();
         FakeTransport transport = new FakeTransport(new WebhookResponse(204, Optional.empty()));
-        WebhookClient client = new WebhookClient(logger, tasks, transport);
+        try (WebhookClient client = new WebhookClient(logger, tasks, transport)) {
+            client.test(settings(true, 1));
+            tasks.runImmediate();
 
-        client.test(settings(true, 1));
-        tasks.runImmediate();
-
-        assertEquals(1, transport.calls);
-        assertFalse(handler.hasWarning());
+            assertEquals(1, transport.calls);
+            assertFalse(handler.hasWarning());
+        }
     }
 
     @Test
@@ -97,12 +100,12 @@ class WebhookClientTest {
         Logger logger = logger(handler);
         FakeTasks tasks = new FakeTasks();
         FakeTransport transport = new FakeTransport(new WebhookResponse(500, Optional.empty()));
-        WebhookClient client = new WebhookClient(logger, tasks, transport);
+        try (WebhookClient client = new WebhookClient(logger, tasks, transport)) {
+            client.test(settings(true, 1));
+            tasks.runImmediate();
 
-        client.test(settings(true, 1));
-        tasks.runImmediate();
-
-        assertTrue(handler.hasMessage("HTTP 500"));
+            assertTrue(handler.hasMessage("HTTP 500"));
+        }
     }
 
     @Test
@@ -111,15 +114,15 @@ class WebhookClientTest {
         FakeTransport transport = new FakeTransport(
                 new WebhookResponse(429, Optional.of("0.001")),
                 new WebhookResponse(204, Optional.empty()));
-        WebhookClient client = new WebhookClient(logger(), tasks, transport);
+        try (WebhookClient client = new WebhookClient(logger(), tasks, transport)) {
+            client.test(settings(true, 1));
+            tasks.runImmediate();
+            assertEquals(List.of(1L), tasks.delays());
+            tasks.runDelayed();
 
-        client.test(settings(true, 1));
-        tasks.runImmediate();
-        assertEquals(List.of(1L), tasks.delays());
-        tasks.runDelayed();
-
-        assertEquals(2, transport.calls);
-        assertTrue(tasks.delayed.isEmpty());
+            assertEquals(2, transport.calls);
+            assertTrue(tasks.delayed.isEmpty());
+        }
     }
 
     @Test
@@ -128,14 +131,14 @@ class WebhookClientTest {
         FakeTransport transport = new FakeTransport(
                 new WebhookResponse(429, Optional.of("0")),
                 new WebhookResponse(429, Optional.of("0")));
-        WebhookClient client = new WebhookClient(logger(), tasks, transport);
+        try (WebhookClient client = new WebhookClient(logger(), tasks, transport)) {
+            client.test(settings(true, 1));
+            tasks.runImmediate();
+            tasks.runDelayed();
 
-        client.test(settings(true, 1));
-        tasks.runImmediate();
-        tasks.runDelayed();
-
-        assertEquals(2, transport.calls);
-        assertTrue(tasks.delayed.isEmpty());
+            assertEquals(2, transport.calls);
+            assertTrue(tasks.delayed.isEmpty());
+        }
     }
 
     @Test
@@ -145,12 +148,12 @@ class WebhookClientTest {
         FakeTasks tasks = new FakeTasks();
         FakeTransport transport = new FakeTransport();
         transport.failure = new IOException("network down");
-        WebhookClient client = new WebhookClient(logger, tasks, transport);
+        try (WebhookClient client = new WebhookClient(logger, tasks, transport)) {
+            client.test(settings(true, 1));
+            tasks.runImmediate();
 
-        client.test(settings(true, 1));
-        tasks.runImmediate();
-
-        assertTrue(handler.hasMessage("IOException"));
+            assertTrue(handler.hasMessage("IOException"));
+        }
     }
 
     @Test
@@ -180,25 +183,27 @@ class WebhookClientTest {
     @Test
     void shutdownCancelsFutureReminders() {
         FakeTasks tasks = new FakeTasks();
-        WebhookClient client = new WebhookClient(
+        try (WebhookClient client = new WebhookClient(
                 logger(),
                 tasks,
-                new FakeTransport());
-        Incident incident = Incident.create(
-                List.of(new PluginHealth(
-                        "WorldGuard",
-                        "WorldGuard",
-                        PluginHealth.State.DISABLED)),
-                false,
-                true);
+                new FakeTransport())) {
 
-        client.incident(settings(true, 3), incident, true, true);
-        assertEquals(2, tasks.delayed.size());
+            Incident incident = Incident.create(
+                    List.of(new PluginHealth(
+                            "WorldGuard",
+                            "WorldGuard",
+                            PluginHealth.State.DISABLED)),
+                    false,
+                    true);
 
-        client.close();
+            client.incident(settings(true, 3), incident, true, true);
+            assertEquals(2, tasks.delayed.size());
 
-        assertTrue(tasks.closed);
-        assertTrue(tasks.delayed.stream().allMatch(task -> task.cancelled));
+            client.close();
+
+            assertTrue(tasks.closed);
+            assertTrue(tasks.delayed.stream().allMatch(task -> task.cancelled));
+        }
     }
 
     private static Settings settings(boolean configured, int repeats) {
