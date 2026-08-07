@@ -102,7 +102,10 @@ public final class IncidentStore implements IncidentRepository {
     @Override
     public synchronized void save(Incident incident) throws IOException {
         Objects.requireNonNull(incident, "incident");
-        Files.createDirectories(file.getParent());
+        Path parent = file.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
 
         JsonObject marker = gson.toJsonTree(incident).getAsJsonObject();
         marker.addProperty(SCHEMA_VERSION, CURRENT_SCHEMA_VERSION);

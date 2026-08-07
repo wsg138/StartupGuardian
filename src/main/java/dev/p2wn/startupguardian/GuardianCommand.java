@@ -2,7 +2,9 @@ package dev.p2wn.startupguardian;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
@@ -23,10 +25,17 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
             "testdiscord",
             "help");
 
-    private final StartupGuardianPlugin plugin;
+    private final Supplier<GuardianService> guardianSupplier;
+
+    private final SettingsReloader settingsReloader;
 
     public GuardianCommand(StartupGuardianPlugin plugin) {
-        this.plugin = plugin;
+        Objects.requireNonNull(plugin, "plugin");
+        guardianSupplier = plugin::guardian;
+        settingsReloader = () -> {
+            plugin.reloadConfig();
+            return SettingsLoader.load(plugin.getConfig());
+        };
     }
 
     @Override
@@ -50,7 +59,7 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
         String subcommand = arguments.length == 0
                 ? "help"
                 : arguments[0].toLowerCase(Locale.ROOT);
-        executeSubcommand(sender, plugin.guardian(), subcommand, arguments);
+        executeSubcommand(sender, guardianSupplier.get(), subcommand, arguments);
         return true;
     }
 
@@ -88,9 +97,8 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
     }
 
     private void reload(CommandSender sender, GuardianService guardian) {
-        plugin.reloadConfig();
         try {
-            Settings updatedSettings = SettingsLoader.load(plugin.getConfig());
+            Settings updatedSettings = settingsReloader.reload();
             guardian.updateSettings(updatedSettings);
             sender.sendMessage(
                     prefix()
@@ -355,5 +363,11 @@ public final class GuardianCommand implements CommandExecutor, TabCompleter {
         String normalizedInput = input.toLowerCase(Locale.ROOT);
         return candidates.stream().filter(
                 candidate -> candidate.startsWith(normalizedInput)).toList();
+    }
+
+    @FunctionalInterface
+    private interface SettingsReloader {
+
+        Settings reload();
     }
 }
