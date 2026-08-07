@@ -1,3 +1,5 @@
+# Use the plugin name reported by /plugins or the plugin's plugin.yml.
+# Jar file names are not used. Matching is case-insensitive.
 required-plugins:
   - FastAsyncWorldEdit
   - WorldGuard
@@ -7,8 +9,10 @@ required-plugins:
   - Multiverse-Core
   - tebex
   - CoreProtect
+
 startup-check:
   grace-period-ticks: 20
+
 protection:
   enable-whitelist: true
   kick-online-players: true
@@ -18,17 +22,19 @@ protection:
   restart-command: "restart"
   fallback-command: "stop"
   restore-previous-whitelist-state-after-recovery: true
+
 restart-loop-protection:
   enabled: true
   maximum-automatic-restarts: 1
-  attempt-window-minutes: 15
+
 critical-mode-bypass:
   # UUIDs may join while StartupGuardian has an active incident and whitelist mode is enabled.
   player-uuids: []
-  # Grant this permission through your permissions plugin for a role-based bypass.
+  # Explicit permission bypasses still work for operators when allow-ops is false.
   permission: "startupguardian.bypass"
-  # Keep false unless every server operator should bypass critical-mode access restrictions.
+  # Keep false unless every server operator should bypass without an explicit permission.
   allow-ops: false
+
 discord:
   enabled: true
   webhook-url: ""
@@ -40,6 +46,7 @@ discord:
   delay-between-alerts-milliseconds: 1500
   username: "Startup Guardian"
   avatar-url: ""
+
 messages:
   incident-title: "CRITICAL SERVER STARTUP FAILURE"
   recovery-title: "Server startup recovered"
