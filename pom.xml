@@ -6,7 +6,7 @@
 
     <groupId>dev.p2wn</groupId>
     <artifactId>startupguardian</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.1</version>
     <name>StartupGuardian</name>
     <description>Fail-safe startup protection for Paper and Leaf servers.</description>
 
