@@ -49,6 +49,51 @@ class IncidentStateTest {
     }
 
     @Test
+    void missingPluginRoundTripsWithoutFalseCorruption() throws IOException {
+        List<PluginHealth> missing = List.of(
+                new PluginHealth(
+                        "PolarLoader",
+                        null,
+                        PluginHealth.State.MISSING));
+        IncidentStore firstStore = new IncidentStore(directory, LOGGER);
+        Incident original = Incident.create(missing, false, true)
+                .withRestartScheduled();
+
+        firstStore.save(original);
+        String json = Files.readString(firstStore.path());
+        IncidentStore restartedStore = new IncidentStore(directory, LOGGER);
+        Optional<Incident> loaded = restartedStore.load();
+
+        assertTrue(json.contains("\"detectedName\": null"));
+        assertEquals(original, loaded.orElseThrow());
+        assertFalse(restartedStore.corrupted());
+    }
+
+    @Test
+    void currentSchemaAcceptsOmittedNullableDetectedName() throws IOException {
+        IncidentStore store = new IncidentStore(directory, LOGGER);
+        Files.writeString(store.path(), currentMissingPluginMarker());
+
+        Incident incident = store.load().orElseThrow();
+
+        assertEquals("Polar", incident.failures().getFirst().configuredName());
+        assertEquals(null, incident.failures().getFirst().detectedName());
+        assertEquals("missing", incident.failures().getFirst().status());
+        assertFalse(store.corrupted());
+    }
+
+    @Test
+    void currentSchemaRejectsInvalidDetectedName() throws IOException {
+        JsonObject marker = parsedCurrentMarker();
+        marker.getAsJsonArray("failures")
+                .get(0)
+                .getAsJsonObject()
+                .addProperty("detectedName", 1);
+
+        assertRejected(marker.toString());
+    }
+
+    @Test
     void validLegacyMarkerRemainsReadable() throws IOException {
         IncidentStore store = new IncidentStore(directory, LOGGER);
         Files.writeString(store.path(), legacyMarker());
@@ -260,6 +305,24 @@ class IncidentStateTest {
                   "schemaVersion": 1
                 }
                 """.formatted(INCIDENT_ID, FIRST_DETECTION, LAST_DETECTION);
+    }
+
+    private static String currentMissingPluginMarker() {
+        return """
+                {
+                  "incidentId": "10bd2e1d-c1f3-4e19-8260-94722fc31d56",
+                  "firstDetection": "2026-08-07T04:01:25.309830352Z",
+                  "lastDetection": "2026-08-07T04:01:25.309830352Z",
+                  "failures": [
+                    {"configuredName": "Polar", "status": "missing"}
+                  ],
+                  "previousWhitelistEnabled": false,
+                  "guardianEnabledWhitelist": true,
+                  "automaticRestartAttempts": 1,
+                  "restartLoopStopped": false,
+                  "schemaVersion": 1
+                }
+                """;
     }
 
     private static JsonObject parsedCurrentMarker() {

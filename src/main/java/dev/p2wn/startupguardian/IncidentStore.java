@@ -233,7 +233,7 @@ public final class IncidentStore implements IncidentRepository {
             }
             JsonObject failure = element.getAsJsonObject();
             requiredText(failure, "configuredName");
-            requireNullableText(failure, "detectedName");
+            optionalNullableText(failure, "detectedName");
             requiredText(failure, "status");
         }
     }
@@ -256,10 +256,8 @@ public final class IncidentStore implements IncidentRepository {
         return value;
     }
 
-    private static void requireNullableText(JsonObject object, String name) {
-        requirePresent(object, name);
-        JsonElement value = object.get(name);
-        if (value.isJsonNull()) {
+    private static void optionalNullableText(JsonObject object, String name) {
+        if (!object.has(name) || object.get(name).isJsonNull()) {
             return;
         }
         requiredText(object, name);
@@ -390,6 +388,7 @@ public final class IncidentStore implements IncidentRepository {
                         new JsonPrimitive(source.toString());
 
         return new GsonBuilder()
+                .serializeNulls()
                 .registerTypeAdapter(Instant.class, serializer)
                 .registerTypeAdapter(
                         Instant.class,
