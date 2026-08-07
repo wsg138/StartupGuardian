@@ -58,23 +58,10 @@ public final class GuardianService {
 
     public Optional<Incident> incident() {
         Optional<Incident> incident = store.load();
-        if (incident.isPresent() || !store.corrupted()) {
-            return incident;
+        if (store.corrupted()) {
+            return Optional.of(corruptionIncident());
         }
-
-        Instant now = Instant.now();
-        return Optional.of(new Incident(
-                "CORRUPTED-MARKER",
-                now,
-                now,
-                List.of(new Incident.Failure(
-                        "active-incident.json",
-                        null,
-                        "corrupted")),
-                false,
-                false,
-                0,
-                true));
+        return incident;
     }
 
     public boolean allowsCriticalBypass(Player player) {
@@ -181,58 +168,99 @@ public final class GuardianService {
 
         try {
             Optional<Incident> existingIncident = store.load();
-            boolean previousWhitelist = environment.whitelistEnabled();
-
-            Incident incident = existingIncident.map(
-                    value -> value.observed(pluginHealth)).orElseGet(
-                            () -> Incident.create(
-                                    pluginHealth,
-                                    previousWhitelist,
-                                    false));
-
-            RestartPolicy.Decision decision = RestartPolicy.evaluate(
-                    incident,
-                    currentSettings.loop(),
-                    hasScheduledRestart(),
-                    store.corrupted());
-            Incident persistedIncident = decision.incident();
-
-            if (!save(persistedIncident)) {
-                notifier.persistenceFailure(currentSettings, persistedIncident);
+            if (store.corrupted()) {
+                reportCorruptedFailure();
                 return;
             }
-
-            ProtectionResult protectionResult = applyWhitelistSafely(persistedIncident);
-            if (!protectionResult.continueActions()) {
-                if (protectionResult.reportIncident()) {
-                    reportIncident(protectionResult.incident(), false);
-                }
-                return;
-            }
-            persistedIncident = protectionResult.incident();
-
-            kickPlayersSafely();
-
-            boolean restartScheduled = false;
-            if (decision.scheduleRestart()) {
-                Optional<GuardianEnvironment.RestartTask> scheduledTask = scheduleRestart();
-                if (scheduledTask.isPresent()) {
-                    restartTask = scheduledTask;
-                    Incident restartIncident = persistedIncident.withRestartScheduled();
-                    if (!save(restartIncident)) {
-                        notifier.persistenceFailure(currentSettings, restartIncident);
-                        cancelUnpersistedRestart();
-                        return;
-                    }
-                    persistedIncident = restartIncident;
-                    restartScheduled = true;
-                }
-            }
-
-            reportIncident(persistedIncident, restartScheduled);
+            handleTrustedFailure(pluginHealth, existingIncident);
         } finally {
             handling.set(false);
         }
+    }
+
+    private void handleTrustedFailure(
+            List<PluginHealth> pluginHealth,
+            Optional<Incident> existingIncident) {
+
+        boolean previousWhitelist = environment.whitelistEnabled();
+        Incident incident = existingIncident.map(
+                value -> value.observed(pluginHealth)).orElseGet(
+                        () -> Incident.create(
+                                pluginHealth,
+                                previousWhitelist,
+                                false));
+
+        RestartPolicy.Decision decision = RestartPolicy.evaluate(
+                incident,
+                currentSettings.loop(),
+                hasScheduledRestart(),
+                false);
+        Incident persistedIncident = decision.incident();
+
+        if (!save(persistedIncident)) {
+            notifier.persistenceFailure(currentSettings, persistedIncident);
+            return;
+        }
+
+        ProtectionResult protectionResult = applyWhitelistSafely(persistedIncident);
+        if (!protectionResult.continueActions()) {
+            if (protectionResult.reportIncident()) {
+                reportIncident(protectionResult.incident(), false);
+            }
+            return;
+        }
+        persistedIncident = protectionResult.incident();
+
+        kickPlayersSafely();
+        scheduleRestartIfNeeded(decision, persistedIncident);
+    }
+
+    private void scheduleRestartIfNeeded(
+            RestartPolicy.Decision decision,
+            Incident persistedIncident) {
+
+        boolean restartScheduled = false;
+        if (decision.scheduleRestart()) {
+            Optional<GuardianEnvironment.RestartTask> scheduledTask = scheduleRestart();
+            if (scheduledTask.isPresent()) {
+                restartTask = scheduledTask;
+                Incident restartIncident = persistedIncident.withRestartScheduled();
+                if (!save(restartIncident)) {
+                    notifier.persistenceFailure(currentSettings, restartIncident);
+                    cancelUnpersistedRestart();
+                    return;
+                }
+                persistedIncident = restartIncident;
+                restartScheduled = true;
+            }
+        }
+
+        reportIncident(persistedIncident, restartScheduled);
+    }
+
+    private void reportCorruptedFailure() {
+        logger.severe(
+                "[StartupGuardian] Required plugins are unhealthy, but incident persistence "
+                        + "is corrupt. Automatic incident replacement, whitelist mutation, "
+                        + "player kicks, and restart scheduling are suppressed until an "
+                        + "explicit successful reset resolves unknown whitelist ownership.");
+        reportIncident(corruptionIncident(), false);
+    }
+
+    private Incident corruptionIncident() {
+        Instant now = Instant.now();
+        return new Incident(
+                "CORRUPTED-MARKER",
+                now,
+                now,
+                List.of(new Incident.Failure(
+                        "active-incident.json",
+                        null,
+                        "corrupted")),
+                false,
+                false,
+                0,
+                true);
     }
 
     private ProtectionResult applyWhitelistSafely(Incident incident) {

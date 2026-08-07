@@ -8,8 +8,15 @@ interface IncidentRepository {
 
     Optional<Incident> load();
 
+    /**
+     * Persists ordinary trusted incident state without resolving corruption.
+     * Implementations must reject or preserve any unresolved corruption state.
+     */
     void save(Incident incident) throws IOException;
 
+    /**
+     * Explicitly clears active incident and corruption state.
+     */
     void clear() throws IOException;
 
     boolean corrupted();

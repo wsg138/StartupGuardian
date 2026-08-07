@@ -2,6 +2,7 @@ package dev.p2wn.startupguardian;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
@@ -146,19 +147,67 @@ class IncidentStateTest {
     }
 
     @Test
-    void trustedIncidentReplacementClearsPersistentCorruption() throws IOException {
+    void ordinarySaveCannotResolvePersistentCorruption() throws IOException {
         IncidentStore firstStore = new IncidentStore(directory, LOGGER);
         Files.writeString(firstStore.path(), "{}");
         assertTrue(firstStore.load().isEmpty());
 
+        Path sentinel = directory.resolve(IncidentStore.CORRUPTION_SENTINEL_FILE);
         Incident trustedIncident = Incident.create(failed, false, true);
-        new IncidentStore(directory, LOGGER).save(trustedIncident);
+        IncidentStore restartedStore = new IncidentStore(directory, LOGGER);
+
+        assertThrows(IOException.class, () -> restartedStore.save(trustedIncident));
+        assertTrue(restartedStore.corrupted());
+        assertTrue(Files.exists(sentinel));
+        assertFalse(Files.exists(restartedStore.path()));
+    }
+
+    @Test
+    void validMarkerBesideSentinelKeepsCorruptionDominant() throws IOException {
+        Incident trustedIncident = Incident.create(failed, false, true);
+        IncidentStore firstStore = new IncidentStore(directory, LOGGER);
+        firstStore.save(trustedIncident);
+        Files.writeString(
+                directory.resolve(IncidentStore.CORRUPTION_SENTINEL_FILE),
+                "unresolved\n");
 
         IncidentStore restartedStore = new IncidentStore(directory, LOGGER);
-        assertFalse(restartedStore.corrupted());
+
         assertEquals(trustedIncident, restartedStore.load().orElseThrow());
-        assertFalse(Files.exists(directory.resolve(
+        assertTrue(restartedStore.corrupted());
+        assertThrows(
+                IOException.class,
+                () -> restartedStore.save(trustedIncident.observed(failed)));
+        assertTrue(Files.exists(directory.resolve(
                 IncidentStore.CORRUPTION_SENTINEL_FILE)));
+    }
+
+    @Test
+    void failedSentinelClearLeavesPersistentEmergencyState() throws IOException {
+        Incident trustedIncident = Incident.create(failed, false, true);
+        IncidentStore firstStore = new IncidentStore(directory, LOGGER);
+        firstStore.save(trustedIncident);
+        Path sentinel = directory.resolve(IncidentStore.CORRUPTION_SENTINEL_FILE);
+        Files.writeString(sentinel, "unresolved\n");
+
+        IncidentStore.FileDeleter failingSentinelDeleter = path -> {
+            if (path.equals(sentinel)) {
+                throw new IOException("forced sentinel deletion failure");
+            }
+            return Files.deleteIfExists(path);
+        };
+        IncidentStore store = new IncidentStore(
+                directory,
+                LOGGER,
+                Files::move,
+                failingSentinelDeleter);
+
+        assertThrows(IOException.class, store::clear);
+
+        assertFalse(Files.exists(store.path()));
+        assertTrue(Files.exists(sentinel));
+        assertTrue(store.corrupted());
+        assertTrue(store.hasActiveIncident());
     }
 
     @Test

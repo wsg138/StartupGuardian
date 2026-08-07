@@ -51,6 +51,7 @@ public final class IncidentStore implements IncidentRepository {
     private final Logger logger;
     private final Gson gson;
     private final FileMover mover;
+    private final FileDeleter deleter;
 
     private Optional<Incident> cachedIncident = Optional.empty();
     private boolean loaded;
@@ -58,15 +59,25 @@ public final class IncidentStore implements IncidentRepository {
     private boolean quarantineFailed;
 
     public IncidentStore(Path dataFolder, Logger logger) {
-        this(dataFolder, logger, Files::move);
+        this(dataFolder, logger, Files::move, Files::deleteIfExists);
     }
 
     IncidentStore(Path dataFolder, Logger logger, FileMover mover) {
+        this(dataFolder, logger, mover, Files::deleteIfExists);
+    }
+
+    IncidentStore(
+            Path dataFolder,
+            Logger logger,
+            FileMover mover,
+            FileDeleter deleter) {
+
         Path folder = Objects.requireNonNull(dataFolder, "dataFolder");
         file = folder.resolve(ACTIVE_INCIDENT_FILE);
         corruptionSentinel = folder.resolve(CORRUPTION_SENTINEL_FILE);
         this.logger = Objects.requireNonNull(logger, "logger");
         this.mover = Objects.requireNonNull(mover, "mover");
+        this.deleter = Objects.requireNonNull(deleter, "deleter");
         gson = createGson();
         corruptionDetected = Files.exists(corruptionSentinel);
     }
@@ -107,6 +118,11 @@ public final class IncidentStore implements IncidentRepository {
     @Override
     public synchronized void save(Incident incident) throws IOException {
         Objects.requireNonNull(incident, "incident");
+        if (corrupted()) {
+            throw new IOException(
+                    "Incident persistence is corrupt; only explicit reset may resolve it");
+        }
+
         Path parent = file.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
@@ -124,7 +140,13 @@ public final class IncidentStore implements IncidentRepository {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING);
             replaceAtomically(temporaryFile);
-            Files.deleteIfExists(corruptionSentinel);
+            if (Files.exists(corruptionSentinel)) {
+                corruptionDetected = true;
+                loaded = false;
+                cachedIncident = Optional.empty();
+                throw new IOException(
+                        "Corruption sentinel appeared while saving incident state");
+            }
             cachedIncident = Optional.of(incident);
             loaded = true;
             corruptionDetected = false;
@@ -136,8 +158,8 @@ public final class IncidentStore implements IncidentRepository {
 
     @Override
     public synchronized void clear() throws IOException {
-        Files.deleteIfExists(file);
-        Files.deleteIfExists(corruptionSentinel);
+        deleter.deleteIfExists(file);
+        deleter.deleteIfExists(corruptionSentinel);
         cachedIncident = Optional.empty();
         loaded = true;
         corruptionDetected = false;
@@ -356,7 +378,7 @@ public final class IncidentStore implements IncidentRepository {
         Files.writeString(
                 corruptionSentinel,
                 "StartupGuardian detected an untrusted incident marker. "
-                        + "Clear only through an explicit successful reset or trusted save.\n",
+                        + "Clear only through an explicit successful reset.\n",
                 StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING);
@@ -381,5 +403,11 @@ public final class IncidentStore implements IncidentRepository {
     interface FileMover {
 
         Path move(Path source, Path target, CopyOption... options) throws IOException;
+    }
+
+    @FunctionalInterface
+    interface FileDeleter {
+
+        boolean deleteIfExists(Path path) throws IOException;
     }
 }
