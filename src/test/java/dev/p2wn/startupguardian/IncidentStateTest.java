@@ -119,6 +119,8 @@ class IncidentStateTest {
         assertTrue(store.load().isEmpty());
         assertTrue(store.corrupted());
         assertFalse(Files.exists(store.path()));
+        assertTrue(Files.exists(directory.resolve(
+                IncidentStore.CORRUPTION_SENTINEL_FILE)));
         try (Stream<Path> paths = Files.list(directory)) {
             assertTrue(paths.anyMatch(path -> path.getFileName().toString().contains("corrupt")));
         }
@@ -139,6 +141,24 @@ class IncidentStateTest {
         assertTrue(store.corrupted());
         assertTrue(store.quarantineFailed());
         assertTrue(Files.exists(store.path()));
+        assertTrue(Files.exists(directory.resolve(
+                IncidentStore.CORRUPTION_SENTINEL_FILE)));
+    }
+
+    @Test
+    void trustedIncidentReplacementClearsPersistentCorruption() throws IOException {
+        IncidentStore firstStore = new IncidentStore(directory, LOGGER);
+        Files.writeString(firstStore.path(), "{}");
+        assertTrue(firstStore.load().isEmpty());
+
+        Incident trustedIncident = Incident.create(failed, false, true);
+        new IncidentStore(directory, LOGGER).save(trustedIncident);
+
+        IncidentStore restartedStore = new IncidentStore(directory, LOGGER);
+        assertFalse(restartedStore.corrupted());
+        assertEquals(trustedIncident, restartedStore.load().orElseThrow());
+        assertFalse(Files.exists(directory.resolve(
+                IncidentStore.CORRUPTION_SENTINEL_FILE)));
     }
 
     @Test

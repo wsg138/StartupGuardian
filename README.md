@@ -48,11 +48,11 @@ New markers use schema version `1` and contain:
 
 StartupGuardian validates the JSON object, every required property, property types, timestamps, failure entries, and the schema version before deserializing it. Complete markers written by StartupGuardian `1.0.0` remain readable through the legacy schema path. Missing primitive properties are rejected rather than being accepted as Gson defaults. Unsupported future versions, malformed JSON, and incomplete markers are quarantined to a timestamped `active-incident.corrupt-*.json` file when possible.
 
-An untrusted marker suppresses automatic restart behavior. If quarantine itself fails, the invalid marker is left in place and the in-process corruption state still suppresses automatic restarts.
+Before quarantine, StartupGuardian creates `plugins/StartupGuardian/incident-corruption.lock`. Every new process recognizes this sentinel as an active emergency state, so trusted bypasses and status reporting remain available while automatic recovery and restart activity remain suppressed. The sentinel is removed only by a successful explicit reset or by successfully saving a trusted incident. If the sentinel cannot be written, the malformed active marker is left in place so the next process can detect it again.
 
-On a healthy check after an incident, StartupGuardian first clears the marker. Only after that succeeds does it cancel a pending restart, restore the whitelist when StartupGuardian originally enabled it, and queue the recovery alert. A whitelist that was already enabled before the incident is not disabled.
+On a healthy check after an incident, StartupGuardian first cancels a pending restart and restores the whitelist when StartupGuardian originally enabled it. It clears the marker only after those recovery actions succeed. If cancellation, restoration, or clearing fails, the persistent incident remains so recovery can be retried. A whitelist that was already enabled before the incident is not disabled. Automatic healthy recovery does not clear a persistent corruption sentinel.
 
-`/startupguardian reset confirm` also clears the marker first. A successful reset then cancels a pending restart and leaves the whitelist unchanged. If marker deletion fails, reset reports failure and leaves the pending restart unchanged.
+`/startupguardian reset confirm` clears the active marker and corruption sentinel first. A successful reset then cancels a pending restart and leaves the whitelist unchanged. If either deletion fails, reset reports failure and leaves the persistent emergency state active.
 
 ## Critical-mode access bypass
 
@@ -62,7 +62,7 @@ By default, no player bypasses emergency whitelist restrictions. Access can be a
 - the configured permission, normally `startupguardian.bypass`;
 - operator status when `critical-mode-bypass.allow-ops` is enabled.
 
-Explicit UUID and permission bypasses still work for operators when automatic operator bypass is disabled. Bypasses apply only while the whitelist is enabled and a trusted active incident exists.
+Explicit UUID and permission bypasses still work for operators when automatic operator bypass is disabled. Bypasses apply only while the whitelist is enabled and StartupGuardian has an active incident or persistent corruption sentinel.
 
 ## Discord behavior
 

@@ -351,13 +351,14 @@ public final class GuardianService {
 
     private void recoverIfNeeded() {
         Optional<Incident> activeIncident = store.load();
+        if (store.corrupted()) {
+            logger.severe(
+                    "[StartupGuardian] Plugin health recovered, but persistent incident "
+                            + "corruption is recorded. Automatic recovery remains suppressed; "
+                            + "trusted emergency bypasses remain active until reset.");
+            return;
+        }
         if (activeIncident.isEmpty()) {
-            if (store.corrupted()) {
-                logger.severe(
-                        "[StartupGuardian] Plugin health recovered, but the incident marker "
-                                + "is corrupted. Automatic recovery remains suppressed; "
-                                + "trusted emergency bypasses remain active until reset.");
-            }
             return;
         }
 

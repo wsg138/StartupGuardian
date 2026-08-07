@@ -34,6 +34,7 @@ public final class IncidentStore implements IncidentRepository {
     static final int CURRENT_SCHEMA_VERSION = 1;
 
     private static final String ACTIVE_INCIDENT_FILE = "active-incident.json";
+    static final String CORRUPTION_SENTINEL_FILE = "incident-corruption.lock";
     private static final String SCHEMA_VERSION = "schemaVersion";
     private static final List<String> REQUIRED_INCIDENT_FIELDS = List.of(
             "incidentId",
@@ -46,6 +47,7 @@ public final class IncidentStore implements IncidentRepository {
             "restartLoopStopped");
 
     private final Path file;
+    private final Path corruptionSentinel;
     private final Logger logger;
     private final Gson gson;
     private final FileMover mover;
@@ -60,10 +62,13 @@ public final class IncidentStore implements IncidentRepository {
     }
 
     IncidentStore(Path dataFolder, Logger logger, FileMover mover) {
-        file = Objects.requireNonNull(dataFolder, "dataFolder").resolve(ACTIVE_INCIDENT_FILE);
+        Path folder = Objects.requireNonNull(dataFolder, "dataFolder");
+        file = folder.resolve(ACTIVE_INCIDENT_FILE);
+        corruptionSentinel = folder.resolve(CORRUPTION_SENTINEL_FILE);
         this.logger = Objects.requireNonNull(logger, "logger");
         this.mover = Objects.requireNonNull(mover, "mover");
         gson = createGson();
+        corruptionDetected = Files.exists(corruptionSentinel);
     }
 
     @Override
@@ -119,6 +124,7 @@ public final class IncidentStore implements IncidentRepository {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING);
             replaceAtomically(temporaryFile);
+            Files.deleteIfExists(corruptionSentinel);
             cachedIncident = Optional.of(incident);
             loaded = true;
             corruptionDetected = false;
@@ -131,6 +137,7 @@ public final class IncidentStore implements IncidentRepository {
     @Override
     public synchronized void clear() throws IOException {
         Files.deleteIfExists(file);
+        Files.deleteIfExists(corruptionSentinel);
         cachedIncident = Optional.empty();
         loaded = true;
         corruptionDetected = false;
@@ -139,6 +146,9 @@ public final class IncidentStore implements IncidentRepository {
 
     @Override
     public synchronized boolean corrupted() {
+        if (!corruptionDetected && Files.exists(corruptionSentinel)) {
+            corruptionDetected = true;
+        }
         return corruptionDetected;
     }
 
@@ -300,18 +310,35 @@ public final class IncidentStore implements IncidentRepository {
                 "active-incident.corrupt-" + System.currentTimeMillis() + ".json");
 
         try {
+            persistCorruptionSentinel();
+        } catch (IOException sentinelException) {
+            quarantineFailed = true;
+            logger.log(
+                    Level.SEVERE,
+                    "[StartupGuardian] Incident marker was invalid, but the persistent "
+                            + "corruption sentinel could not be written. The invalid marker "
+                            + "was left in place so a later process can detect it.",
+                    sentinelException);
+            logger.log(
+                    Level.FINE,
+                    "[StartupGuardian] Incident marker validation failure.",
+                    cause);
+            return;
+        }
+
+        try {
             mover.move(file, backup, StandardCopyOption.REPLACE_EXISTING);
             logger.log(
                     Level.SEVERE,
                     "[StartupGuardian] Incident marker was invalid and was moved to {0}. "
-                            + "Automatic restart remains suppressed until reset.",
+                            + "Persistent emergency protection remains active until reset.",
                     backup);
         } catch (IOException backupException) {
             quarantineFailed = true;
             logger.log(
                     Level.SEVERE,
                     "[StartupGuardian] Incident marker was invalid and could not be quarantined. "
-                            + "Automatic restart remains suppressed.",
+                            + "Persistent emergency protection remains active.",
                     backupException);
         }
 
@@ -319,6 +346,20 @@ public final class IncidentStore implements IncidentRepository {
                 Level.FINE,
                 "[StartupGuardian] Incident marker validation failure.",
                 cause);
+    }
+
+    private void persistCorruptionSentinel() throws IOException {
+        Path parent = corruptionSentinel.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        Files.writeString(
+                corruptionSentinel,
+                "StartupGuardian detected an untrusted incident marker. "
+                        + "Clear only through an explicit successful reset or trusted save.\n",
+                StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING);
     }
 
     private static Gson createGson() {
