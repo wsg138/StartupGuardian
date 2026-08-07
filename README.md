@@ -13,6 +13,8 @@ StartupGuardian cannot protect against **StartupGuardian itself** failing to loa
 3. Start once, then edit `plugins/StartupGuardian/config.yml`.
 4. Restart the server normally.
 
+StartupGuardian creates its packaged `config.yml` only when the server-side file does not already exist. Normal plugin startup does not intentionally replace an existing configuration file.
+
 The final dependency check runs after `ServerLoadEvent` on a full startup. It does not automatically enforce after `/reload`.
 
 Set `required-plugins` to plugin names reported by `/plugins` or declared in each dependency's `plugin.yml`. Matching is case-insensitive, duplicate names are removed case-insensitively, and an empty list is rejected. Jar file names are not used.
@@ -46,7 +48,7 @@ New markers use schema version `1` and contain:
 - the automatic restart count;
 - whether restart-loop protection stopped further restarts.
 
-StartupGuardian validates the JSON object, every required property, property types, timestamps, failure entries, and the schema version before deserializing it. Complete markers written by StartupGuardian `1.0.0` remain readable through the legacy schema path. Missing primitive properties are rejected rather than being accepted as Gson defaults. Unsupported future versions, malformed JSON, and incomplete markers are quarantined to a timestamped `active-incident.corrupt-*.json` file when possible.
+StartupGuardian validates the JSON object, required properties, property types, timestamps, failure entries, and the schema version before deserializing it. Complete markers written by StartupGuardian `1.0.0` remain readable through the legacy schema path. `detectedName` is nullable because a genuinely missing plugin has no detected plugin name; StartupGuardian `1.1.1` also accepts the field being omitted for compatibility with missing-plugin markers written by `1.1.0`. Other missing required primitive properties are rejected rather than being accepted as Gson defaults. Unsupported future versions, malformed JSON, and incomplete markers are quarantined to a timestamped `active-incident.corrupt-*.json` file when possible.
 
 Before quarantine, StartupGuardian creates `plugins/StartupGuardian/incident-corruption.lock`. Every new process recognizes this sentinel as an active emergency state. Corruption dominates even if a valid-looking `active-incident.json` also exists: automatic incident replacement, whitelist mutation, player kicks, healthy recovery, and restart scheduling remain suppressed because whitelist ownership is unknown. Ordinary incident saves cannot clear or bypass the sentinel. Only a successful explicit `/startupguardian reset confirm` resolves corruption, and reset deliberately leaves the current whitelist unchanged for staff to reconcile manually. If the sentinel cannot be written, the malformed active marker is left in place so the next process can detect it again.
 
