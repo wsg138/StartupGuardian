@@ -83,6 +83,17 @@ class IncidentStateTest {
     }
 
     @Test
+    void currentSchemaRejectsInvalidDetectedName() throws IOException {
+        JsonObject marker = parsedCurrentMarker();
+        marker.getAsJsonArray("failures")
+                .get(0)
+                .getAsJsonObject()
+                .addProperty("detectedName", 1);
+
+        assertRejected(marker.toString());
+    }
+
+    @Test
     void validLegacyMarkerRemainsReadable() throws IOException {
         IncidentStore store = new IncidentStore(directory, LOGGER);
         Files.writeString(store.path(), legacyMarker());
